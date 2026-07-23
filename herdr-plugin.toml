@@ -1,0 +1,31 @@
+id = "herdr.switchyard"
+name = "Switchyard"
+version = "0.1.0"
+min_herdr_version = "0.7.5"
+description = "Jump between configured projects and persistent worktree sessions"
+platforms = ["linux", "macos"]
+
+[[build]]
+command = ["cargo", "build", "--release", "--locked"]
+
+[[actions]]
+id = "open"
+title = "Open Switchyard"
+contexts = ["workspace"]
+command = ["target/release/herdr-switchyard", "open"]
+
+[[events]]
+on = "pane.agent_detected"
+command = ["target/release/herdr-switchyard", "sync"]
+
+[[events]]
+on = "pane.agent_status_changed"
+command = ["target/release/herdr-switchyard", "sync"]
+
+[[panes]]
+id = "picker"
+title = "Switchyard"
+placement = "popup"
+width = "80%"
+height = "80%"
+command = ["./target/release/herdr-switchyard", "picker"]
