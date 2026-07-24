@@ -381,18 +381,19 @@ fn start_resumed_agent<H: Herdr>(
 
 fn resume_args(project: &Project, session: &Session) -> Result<Vec<String>> {
     let mut args = project.agent_args.clone();
-    let reference = session
+    let agent_session = session
         .agent_session
         .as_ref()
-        .filter(|session| session.agent == project.agent)
-        .map(|session| session.value.as_str());
-    match (project.agent.as_str(), reference) {
-        ("codex", Some(reference)) => args.extend(["resume".into(), reference.into()]),
+        .filter(|session| session.agent == project.agent);
+    match (project.agent.as_str(), agent_session) {
+        ("codex", Some(session)) => args.extend(["resume".into(), session.value.clone()]),
         ("codex", None) => args.push("resume".into()),
-        ("claude", Some(reference)) => args.extend(["--resume".into(), reference.into()]),
+        ("claude", Some(session)) => args.extend(["--resume".into(), session.value.clone()]),
         ("claude", None) => args.push("--resume".into()),
-        ("pi", Some(reference)) => args.extend(["--session".into(), reference.into()]),
-        ("pi", None) => args.push("-r".into()),
+        ("pi", Some(session)) if session.kind == "path" && !session.value.is_empty() => {
+            args.extend(["--session".into(), session.value.clone()]);
+        }
+        ("pi", _) => {}
         _ => bail!("unsupported agent {:?}", project.agent),
     }
     Ok(args)

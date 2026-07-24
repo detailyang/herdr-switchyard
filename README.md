@@ -89,8 +89,10 @@ Selecting a stored session follows this order:
    dormant;
 4. report `missing` without destructive repair if a worktree path disappeared.
 
-Codex, Claude, and Pi use their native session id when a Herdr integration reported
-one. Without an id, Switchyard falls back to the agent's native resume picker.
+Codex and Claude use their native session id when a Herdr integration reported one;
+Pi uses its recorded session path. Without one, Codex and Claude fall back to their
+native resume picker, while Pi starts a new session so a new directory does not
+open an empty resume picker.
 
 ## Configuration
 

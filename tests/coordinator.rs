@@ -551,6 +551,85 @@ fn opens_a_dormant_worktree_and_resumes_its_exact_agent_session() {
 }
 
 #[test]
+fn opens_a_dormant_pi_session_without_history_as_a_new_session() {
+    let herdr = FakeHerdr::default();
+    let mut pi_project = project();
+    pi_project.agent = "pi".into();
+    let mut state = State {
+        sessions: vec![session("/worktrees/demo/feat-one")],
+        ..Default::default()
+    };
+
+    let result = activate_existing(&herdr, &pi_project, &mut state, "feat/one", 42).unwrap();
+
+    assert_eq!(result, Activation::Opened);
+    assert_eq!(
+        herdr.calls.into_inner(),
+        [
+            "ensure-project-workspace:demo".to_owned(),
+            "open:demo:w-root:feat/one".to_owned(),
+            format!("start:{}:pi:w2:p1:", agent_name(&pi_project, "feat/one"))
+        ]
+    );
+}
+
+#[test]
+fn opens_a_dormant_pi_session_with_its_exact_history() {
+    let herdr = FakeHerdr::default();
+    let mut pi_project = project();
+    pi_project.agent = "pi".into();
+    let mut stored = session("/worktrees/demo/feat-one");
+    stored.agent_session = Some(AgentSession {
+        agent: "pi".into(),
+        kind: "path".into(),
+        value: "/sessions/pi.jsonl".into(),
+    });
+    let mut state = State {
+        sessions: vec![stored],
+        ..Default::default()
+    };
+
+    let result = activate_existing(&herdr, &pi_project, &mut state, "feat/one", 42).unwrap();
+
+    assert_eq!(result, Activation::Opened);
+    assert_eq!(
+        herdr.calls.into_inner(),
+        [
+            "ensure-project-workspace:demo".to_owned(),
+            "open:demo:w-root:feat/one".to_owned(),
+            format!(
+                "start:{}:pi:w2:p1:--session /sessions/pi.jsonl",
+                agent_name(&pi_project, "feat/one")
+            )
+        ]
+    );
+}
+
+#[test]
+fn opens_a_dormant_pi_session_with_a_non_path_reference_as_new() {
+    let herdr = FakeHerdr::default();
+    let mut pi_project = project();
+    pi_project.agent = "pi".into();
+    let mut stored = session("/worktrees/demo/feat-one");
+    stored.agent_session = Some(AgentSession {
+        agent: "pi".into(),
+        kind: "id".into(),
+        value: "not-a-session-path".into(),
+    });
+    let mut state = State {
+        sessions: vec![stored],
+        ..Default::default()
+    };
+
+    activate_existing(&herdr, &pi_project, &mut state, "feat/one", 42).unwrap();
+
+    assert_eq!(
+        herdr.calls.into_inner().last().unwrap(),
+        &format!("start:{}:pi:w2:p1:", agent_name(&pi_project, "feat/one"))
+    );
+}
+
+#[test]
 fn focuses_the_project_agent_when_a_workspace_has_multiple_agents() {
     let herdr = FakeHerdr {
         snapshot: RuntimeSnapshot {
