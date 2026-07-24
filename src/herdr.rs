@@ -13,6 +13,7 @@ use crate::{
         AgentSession, CreatedAgentPane, CreatedWorktree, OpenedWorkspace, Project, RuntimeAgent,
         RuntimeSnapshot, RuntimeWorkspace, Session,
     },
+    paths::same_path,
     repository::{detach_created_worktree, detached_worktree_plan, worktree_path_for_branch},
 };
 
@@ -121,13 +122,55 @@ impl Herdr for CliHerdr {
         Ok(RuntimeSnapshot { workspaces, agents })
     }
 
-    fn create_worktree(&self, project: &Project, session_name: &str) -> Result<CreatedWorktree> {
+    fn ensure_project_workspace(&self, project: &Project) -> Result<String> {
+        let workspace_response = self.run_json(["workspace", "list"])?;
+        let pane_response = self.run_json(["pane", "list"])?;
+        let panes = array_at(&pane_response, "/result/panes")?;
+
+        for workspace in array_at(&workspace_response, "/result/workspaces")? {
+            let id = string_at(workspace, "/workspace_id")?;
+            let label = workspace.get("label").and_then(Value::as_str);
+            let checkout_path = workspace
+                .pointer("/worktree/checkout_path")
+                .and_then(Value::as_str)
+                .or_else(|| {
+                    panes.iter().find_map(|pane| {
+                        (pane.pointer("/workspace_id").and_then(Value::as_str) == Some(id))
+                            .then(|| pane.pointer("/cwd").and_then(Value::as_str))
+                            .flatten()
+                    })
+                });
+            if label == Some(project.name.as_str())
+                && checkout_path.is_some_and(|path| same_path(Path::new(path), &project.path))
+            {
+                return Ok(id.to_owned());
+            }
+        }
+
+        let response = self.run_json([
+            OsString::from("workspace"),
+            OsString::from("create"),
+            OsString::from("--cwd"),
+            project.path.as_os_str().to_owned(),
+            OsString::from("--label"),
+            OsString::from(&project.name),
+            OsString::from("--no-focus"),
+        ])?;
+        Ok(string_at(&response, "/result/workspace/workspace_id")?.to_owned())
+    }
+
+    fn create_worktree(
+        &self,
+        project: &Project,
+        source_workspace_id: &str,
+        session_name: &str,
+    ) -> Result<CreatedWorktree> {
         let plan = detached_worktree_plan(&project.path, &project.base_branch)?;
         let args = vec![
             OsString::from("worktree"),
             OsString::from("create"),
-            OsString::from("--cwd"),
-            project.path.as_os_str().to_owned(),
+            OsString::from("--workspace"),
+            OsString::from(source_workspace_id),
             OsString::from("--branch"),
             OsString::from(&plan.temporary_branch),
             OsString::from("--base"),
@@ -152,8 +195,8 @@ impl Herdr for CliHerdr {
                     .run_json([
                         OsString::from("worktree"),
                         OsString::from("open"),
-                        OsString::from("--cwd"),
-                        project.path.as_os_str().to_owned(),
+                        OsString::from("--workspace"),
+                        OsString::from(source_workspace_id),
                         OsString::from("--path"),
                         worktree_path.as_os_str().to_owned(),
                         OsString::from("--label"),
@@ -226,12 +269,17 @@ impl Herdr for CliHerdr {
         detach_created_worktree(&project.path, &session.worktree_path, temporary_branch)
     }
 
-    fn open_worktree(&self, project: &Project, session: &Session) -> Result<OpenedWorkspace> {
+    fn open_worktree(
+        &self,
+        _project: &Project,
+        source_workspace_id: &str,
+        session: &Session,
+    ) -> Result<OpenedWorkspace> {
         let args = vec![
             OsString::from("worktree"),
             OsString::from("open"),
-            OsString::from("--cwd"),
-            project.path.as_os_str().to_owned(),
+            OsString::from("--workspace"),
+            OsString::from(source_workspace_id),
             OsString::from("--path"),
             session.worktree_path.as_os_str().to_owned(),
             OsString::from("--label"),

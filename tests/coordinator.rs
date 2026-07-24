@@ -29,10 +29,23 @@ impl Herdr for FakeHerdr {
         Ok(self.snapshot.clone())
     }
 
-    fn create_worktree(&self, project: &Project, session_name: &str) -> Result<CreatedWorktree> {
+    fn ensure_project_workspace(&self, project: &Project) -> Result<String> {
         self.calls
             .borrow_mut()
-            .push(format!("create:{}:{session_name}", project.id));
+            .push(format!("ensure-project-workspace:{}", project.id));
+        Ok("w-root".into())
+    }
+
+    fn create_worktree(
+        &self,
+        project: &Project,
+        source_workspace_id: &str,
+        session_name: &str,
+    ) -> Result<CreatedWorktree> {
+        self.calls.borrow_mut().push(format!(
+            "create:{}:{source_workspace_id}:{session_name}",
+            project.id
+        ));
         Ok(CreatedWorktree {
             workspace: OpenedWorkspace {
                 workspace_id: "w2".into(),
@@ -59,10 +72,16 @@ impl Herdr for FakeHerdr {
         Ok(())
     }
 
-    fn open_worktree(&self, project: &Project, session: &Session) -> Result<OpenedWorkspace> {
-        self.calls
-            .borrow_mut()
-            .push(format!("open:{}:{}", project.id, session.name));
+    fn open_worktree(
+        &self,
+        project: &Project,
+        source_workspace_id: &str,
+        session: &Session,
+    ) -> Result<OpenedWorkspace> {
+        self.calls.borrow_mut().push(format!(
+            "open:{}:{source_workspace_id}:{}",
+            project.id, session.name
+        ));
         Ok(OpenedWorkspace {
             workspace_id: "w2".into(),
             pane_id: "w2:p1".into(),
@@ -203,7 +222,8 @@ fn creates_a_worktree_records_it_and_starts_the_project_agent() {
     assert_eq!(
         herdr.calls.into_inner(),
         [
-            "create:demo:feat/one".to_owned(),
+            "ensure-project-workspace:demo".to_owned(),
+            "create:demo:w-root:feat/one".to_owned(),
             format!("start:{}:codex:w2:p1:", agent_name(&project(), "feat/one"))
         ]
     );
@@ -520,7 +540,8 @@ fn opens_a_dormant_worktree_and_resumes_its_exact_agent_session() {
     assert_eq!(
         herdr.calls.into_inner(),
         [
-            "open:demo:feat/one".to_owned(),
+            "ensure-project-workspace:demo".to_owned(),
+            "open:demo:w-root:feat/one".to_owned(),
             format!(
                 "start:{}:codex:w2:p1:resume session-123",
                 agent_name(&project(), "feat/one")

@@ -24,7 +24,7 @@ fn fake_herdr() -> (tempfile::TempDir, CliHerdr, PathBuf) {
 printf '%s\n' "$*" >> '{}'
 case "$1 $2" in
   "workspace list")
-    printf '%s\n' '{{"result":{{"type":"workspace_list","workspaces":[{{"workspace_id":"w1","worktree":{{"checkout_path":"/worktrees/demo/feat-one"}}}},{{"workspace_id":"w4"}}]}}}}'
+    printf '%s\n' '{{"result":{{"type":"workspace_list","workspaces":[{{"workspace_id":"w1","label":"feat-one","worktree":{{"checkout_path":"/worktrees/demo/feat-one"}}}},{{"workspace_id":"w4","label":"remote-lap"}}]}}}}'
     ;;
   "pane list")
     printf '%s\n' '{{"result":{{"type":"pane_list","panes":[{{"pane_id":"w1:p1","workspace_id":"w1","tab_id":"w1:t1","cwd":"/worktrees/demo/feat-one"}},{{"pane_id":"w4:p1","workspace_id":"w4","tab_id":"w4:t1","cwd":"/repos/demo"}}]}}}}'
@@ -42,12 +42,13 @@ case "$1 $2" in
     case " $* " in
       *" --json "*) printf '%s\n' '{{"error":{{"message":"unknown option: --json"}}}}' >&2; exit 2 ;;
     esac
-    printf '%s\n' '{{"result":{{"type":"workspace_created","workspace":{{"workspace_id":"w4"}},"root_pane":{{"pane_id":"w4:p1"}}}}}}'
+    printf '%s\n' '{{"result":{{"type":"workspace_created","workspace":{{"workspace_id":"w5"}},"root_pane":{{"pane_id":"w5:p1"}}}}}}'
     ;;
   "pane get")
     case "$3" in
       w2:p1) tab_id='w2:t1' ;;
       w4:p1) tab_id='w4:t1' ;;
+      w5:p1) tab_id='w5:t1' ;;
       *) tab_id='w1:t1' ;;
     esac
     printf '%s\n' "{{\"result\":{{\"type\":\"pane_info\",\"pane\":{{\"pane_id\":\"$3\",\"tab_id\":\"$tab_id\"}}}}}}"
@@ -129,6 +130,17 @@ fn parses_the_runtime_snapshot_from_herdr_json() {
 }
 
 #[test]
+fn creates_a_named_project_workspace_instead_of_reusing_an_unrelated_workspace_at_the_same_path() {
+    let (_root, herdr, log) = fake_herdr();
+
+    let workspace_id = herdr.ensure_project_workspace(&project()).unwrap();
+
+    assert_eq!(workspace_id, "w5");
+    let calls = fs::read_to_string(log).unwrap();
+    assert!(calls.contains("workspace create --cwd /repos/demo --label Demo --no-focus"));
+}
+
+#[test]
 fn creates_a_focused_detached_worktree_without_persisting_a_session_branch() {
     let root = tempdir().unwrap();
     let repository = root.path().join("demo");
@@ -162,7 +174,7 @@ if [ "$1 $2" = "tab rename" ]; then
   printf '%s\n' '{{"result":{{"type":"tab_renamed"}}}}'
   exit 0
 fi
-cwd=''
+cwd='{}'
 branch=''
 base=''
 while [ "$#" -gt 0 ]; do
@@ -177,6 +189,7 @@ git -C "$cwd" worktree add -b "$branch" '{}' "$base" >/dev/null 2>&1 || exit 1
 printf '%s\n' '{{"result":{{"type":"worktree_created","workspace":{{"workspace_id":"w2"}},"tab":{{"tab_id":"w2:t1"}},"root_pane":{{"pane_id":"w2:p1"}},"worktree":{{"path":"{}"}}}}}}'
 "#,
         log.display(),
+        repository.display(),
         checkout.display(),
         checkout.display(),
     );
@@ -189,7 +202,7 @@ printf '%s\n' '{{"result":{{"type":"worktree_created","workspace":{{"workspace_i
     configured_project.path = repository.clone();
 
     let opened = herdr
-        .create_worktree(&configured_project, "Improve login flow")
+        .create_worktree(&configured_project, "w-root", "Improve login flow")
         .unwrap();
 
     assert_eq!(opened.workspace.workspace_id, "w2");
@@ -228,7 +241,7 @@ printf '%s\n' '{{"result":{{"type":"worktree_created","workspace":{{"workspace_i
     assert!(temporary_branch_config.stdout.is_empty());
 
     let calls = fs::read_to_string(log).unwrap();
-    assert!(calls.contains("worktree create --cwd"));
+    assert!(calls.contains("worktree create --workspace w-root"));
     assert!(calls.contains("--branch switchyard-session-"));
     assert!(calls.contains(&format!(
         "--base {base_commit} --label Improve login flow --focus --json"
@@ -246,7 +259,7 @@ fn returns_the_created_workspace_with_a_warning_when_detaching_fails() {
     configured_project.path = repository;
 
     let created = herdr
-        .create_worktree(&configured_project, "Improve login flow")
+        .create_worktree(&configured_project, "w-root", "Improve login flow")
         .unwrap();
 
     assert_eq!(created.workspace.workspace_id, "w2");
@@ -292,7 +305,7 @@ if [ "$1 $2" = 'worktree open' ]; then
   printf '%s\n' '{{"result":{{"type":"worktree_opened","workspace":{{"workspace_id":"w2"}},"root_pane":{{"pane_id":"w2:p1"}},"worktree":{{"path":"{}"}}}}}}'
   exit 0
 fi
-cwd=''
+cwd='{}'
 branch=''
 base=''
 while [ "$#" -gt 0 ]; do
@@ -308,6 +321,7 @@ printf '%s\n' '{{invalid-json'
 "#,
         log.display(),
         checkout.display(),
+        repository.display(),
         checkout.display(),
     );
     fs::write(&executable, script).unwrap();
@@ -319,7 +333,7 @@ printf '%s\n' '{{invalid-json'
     configured_project.path = repository;
 
     let created = herdr
-        .create_worktree(&configured_project, "Recover response")
+        .create_worktree(&configured_project, "w-root", "Recover response")
         .unwrap();
 
     assert_eq!(created.warning, None);
@@ -328,7 +342,7 @@ printf '%s\n' '{{invalid-json'
         fs::canonicalize(checkout).unwrap()
     );
     let calls = fs::read_to_string(log).unwrap();
-    assert!(calls.contains("worktree open --cwd"));
+    assert!(calls.contains("worktree open --workspace w-root"));
     assert!(calls.contains("--label Recover response --focus --json"));
     assert!(calls.contains("pane get w2:p1"));
     assert!(calls.contains("tab rename w2:t1 Recover response"));
@@ -353,7 +367,7 @@ if [ "$1 $2" = 'worktree open' ]; then
   printf '%s\n' '{{"result":{{"type":"worktree_opened","workspace":{{"workspace_id":"w2"}},"root_pane":{{"pane_id":"w2:p1"}},"worktree":{{"path":"{}"}}}}}}'
   exit 0
 fi
-cwd=''
+cwd='{}'
 branch=''
 base=''
 while [ "$#" -gt 0 ]; do
@@ -369,6 +383,7 @@ printf '%s\n' '{{"result":{{"type":"worktree_created","workspace":{{"workspace_i
 "#,
         log.display(),
         checkout.display(),
+        repository.display(),
         checkout.display(),
         checkout.display(),
     );
@@ -381,7 +396,7 @@ printf '%s\n' '{{"result":{{"type":"worktree_created","workspace":{{"workspace_i
     configured_project.path = repository;
 
     let created = herdr
-        .create_worktree(&configured_project, "Short title")
+        .create_worktree(&configured_project, "w-root", "Short title")
         .unwrap();
 
     assert_eq!(created.pending_temporary_branch, None);
@@ -409,7 +424,7 @@ if [ "$1 $2" = 'worktree open' ]; then
   printf '%s\n' '{{still-invalid'
   exit 0
 fi
-cwd=''
+cwd='{}'
 branch=''
 base=''
 while [ "$#" -gt 0 ]; do
@@ -423,6 +438,7 @@ done
 git -C "$cwd" worktree add -b "$branch" '{}' "$base" >/dev/null 2>&1 || exit 1
 printf '%s\n' '{{invalid-create'
 "#,
+        repository.display(),
         checkout.display(),
     );
     fs::write(&executable, script).unwrap();
@@ -434,7 +450,7 @@ printf '%s\n' '{{invalid-create'
     configured_project.path = repository;
 
     let created = herdr
-        .create_worktree(&configured_project, "Recover response")
+        .create_worktree(&configured_project, "w-root", "Recover response")
         .unwrap();
 
     assert_eq!(
@@ -466,12 +482,12 @@ fn opens_a_registered_worktree_by_its_persisted_path() {
         agent_session: None,
     };
 
-    let opened = herdr.open_worktree(&project(), &session).unwrap();
+    let opened = herdr.open_worktree(&project(), "w-root", &session).unwrap();
 
     assert_eq!(opened.workspace_id, "w3");
     let calls = fs::read_to_string(log).unwrap();
     assert!(calls.contains(
-        "worktree open --cwd /repos/demo --path /worktrees/demo/feat-one --label feat/one --focus --json"
+        "worktree open --workspace w-root --path /worktrees/demo/feat-one --label feat/one --focus --json"
     ));
     assert!(calls.contains("tab rename w3:t1 feat/one"));
 }
@@ -492,13 +508,13 @@ fn opens_a_local_session_in_the_configured_project_directory() {
 
     let opened = herdr.open_local(&project(), &session).unwrap();
 
-    assert_eq!(opened.workspace_id, "w4");
+    assert_eq!(opened.workspace_id, "w5");
     assert_eq!(opened.worktree_path, PathBuf::from("/repos/demo"));
     let calls = fs::read_to_string(log).unwrap();
     assert!(calls.contains("workspace create --cwd /repos/demo --label Demo --focus"));
     assert!(!calls.contains("workspace create --cwd /repos/demo --label Demo --focus --json"));
-    assert!(calls.contains("pane get w4:p1"));
-    assert!(calls.contains("tab rename w4:t1 local one"));
+    assert!(calls.contains("pane get w5:p1"));
+    assert!(calls.contains("tab rename w5:t1 local one"));
 }
 
 #[test]

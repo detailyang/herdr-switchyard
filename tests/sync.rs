@@ -32,9 +32,14 @@ impl Herdr for SnapshotHerdr {
         Ok(self.snapshot.clone())
     }
 
+    fn ensure_project_workspace(&self, _project: &Project) -> Result<String> {
+        bail!("not used")
+    }
+
     fn create_worktree(
         &self,
         _project: &Project,
+        _source_workspace_id: &str,
         _session_name: &str,
     ) -> Result<herdr_switchyard::model::CreatedWorktree> {
         bail!("not used")
@@ -49,7 +54,12 @@ impl Herdr for SnapshotHerdr {
         bail!("not used")
     }
 
-    fn open_worktree(&self, _project: &Project, _session: &Session) -> Result<OpenedWorkspace> {
+    fn open_worktree(
+        &self,
+        _project: &Project,
+        _source_workspace_id: &str,
+        _session: &Session,
+    ) -> Result<OpenedWorkspace> {
         bail!("not used")
     }
 

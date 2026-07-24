@@ -13,14 +13,25 @@ use crate::{
 
 pub trait Herdr {
     fn snapshot(&self) -> Result<RuntimeSnapshot>;
-    fn create_worktree(&self, project: &Project, session_name: &str) -> Result<CreatedWorktree>;
+    fn ensure_project_workspace(&self, project: &Project) -> Result<String>;
+    fn create_worktree(
+        &self,
+        project: &Project,
+        source_workspace_id: &str,
+        session_name: &str,
+    ) -> Result<CreatedWorktree>;
     fn finish_detach(
         &self,
         project: &Project,
         session: &Session,
         temporary_branch: &str,
     ) -> Result<()>;
-    fn open_worktree(&self, project: &Project, session: &Session) -> Result<OpenedWorkspace>;
+    fn open_worktree(
+        &self,
+        project: &Project,
+        source_workspace_id: &str,
+        session: &Session,
+    ) -> Result<OpenedWorkspace>;
     fn open_local(&self, project: &Project, session: &Session) -> Result<OpenedWorkspace>;
     fn focus_workspace(&self, workspace_id: &str) -> Result<()>;
     fn focus_agent(&self, pane_id: &str) -> Result<()>;
@@ -124,9 +135,14 @@ pub fn activate_existing<H: Herdr>(
         SessionMode::Local => herdr
             .open_local(project, session)
             .with_context(|| format!("open local session {session_name:?}"))?,
-        SessionMode::Worktree => herdr
-            .open_worktree(project, session)
-            .with_context(|| format!("open worktree for session {session_name:?}"))?,
+        SessionMode::Worktree => {
+            let source_workspace_id = herdr
+                .ensure_project_workspace(project)
+                .with_context(|| format!("resolve project workspace for {}", project.name))?;
+            herdr
+                .open_worktree(project, &source_workspace_id, session)
+                .with_context(|| format!("open worktree for session {session_name:?}"))?
+        }
     };
     if recovered_pending_detach {
         start_new_agent(herdr, project, session, &opened.pane_id)?;
@@ -165,8 +181,11 @@ pub fn create_session<H: Herdr>(
         return create_local_session(herdr, project, state, session_name, now_ms);
     }
 
+    let source_workspace_id = herdr
+        .ensure_project_workspace(project)
+        .with_context(|| format!("resolve project workspace for {}", project.name))?;
     let created = herdr
-        .create_worktree(project, session_name)
+        .create_worktree(project, &source_workspace_id, session_name)
         .with_context(|| format!("create worktree for session {session_name:?}"))?;
     let detach_is_pending = created.pending_temporary_branch.is_some();
     state.sessions.push(Session {
