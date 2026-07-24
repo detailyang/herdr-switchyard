@@ -340,6 +340,7 @@ struct ProjectDraft {
     current_dir: PathBuf,
     directories: Vec<PathBuf>,
     show_hidden: bool,
+    filter: String,
     selected: usize,
 }
 
@@ -368,6 +369,7 @@ impl ProjectDraft {
             current_dir,
             directories,
             show_hidden,
+            filter: String::new(),
             selected: 0,
         })
     }
@@ -377,14 +379,24 @@ impl ProjectDraft {
     }
 
     fn visible_directories(&self) -> impl Iterator<Item = &PathBuf> {
-        self.directories.iter().filter(|path| {
-            self.show_hidden
-                || !path
-                    .file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .starts_with('.')
+        let filter = self.filter.to_lowercase();
+        self.directories.iter().filter(move |path| {
+            let name = path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_lowercase();
+            (self.show_hidden || !name.starts_with('.'))
+                && (filter.is_empty() || name.contains(&filter))
         })
+    }
+
+    fn select_first_filter_match(&mut self) {
+        self.selected = if self.filter.is_empty() || self.visible_directories().next().is_none() {
+            0
+        } else {
+            1 + usize::from(self.current_dir.parent().is_some())
+        };
     }
 
     fn choice(&self, position: usize) -> Option<DirectoryChoice> {
@@ -764,7 +776,7 @@ impl Picker {
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) if contains(layout.hidden_toggle, mouse) => {
                 draft.show_hidden = !draft.show_hidden;
-                draft.selected = 0;
+                draft.select_first_filter_match();
                 self.directory_offset = 0;
                 self.last_click = None;
                 self.view = View::AddProject(draft);
@@ -1260,12 +1272,19 @@ impl Picker {
     fn handle_add_project(&mut self, key: KeyCode, mut draft: ProjectDraft) -> Intent {
         let count = draft.row_count();
         match key {
-            KeyCode::Esc => {
+            KeyCode::Esc if draft.filter.is_empty() => {
                 self.view = View::Browser;
                 self.focused_pane = FocusedPane::Projects;
                 Intent::None
             }
-            KeyCode::Up | KeyCode::Char('k') => {
+            KeyCode::Esc => {
+                draft.filter.clear();
+                draft.select_first_filter_match();
+                self.directory_offset = 0;
+                self.view = View::AddProject(draft);
+                Intent::None
+            }
+            KeyCode::Up => {
                 draft.selected = if draft.selected == 0 {
                     count.saturating_sub(1)
                 } else {
@@ -1274,24 +1293,45 @@ impl Picker {
                 self.view = View::AddProject(draft);
                 Intent::None
             }
-            KeyCode::Down | KeyCode::Char('j') => {
+            KeyCode::Down => {
                 if count > 0 {
                     draft.selected = (draft.selected + 1) % count;
                 }
                 self.view = View::AddProject(draft);
                 Intent::None
             }
-            KeyCode::Backspace => {
+            KeyCode::Backspace if draft.filter.is_empty() => {
                 if let Some(parent) = draft.current_dir.parent().map(PathBuf::from) {
                     self.open_add_project_at_with_hidden(parent, draft.show_hidden);
                 }
                 Intent::None
             }
-            KeyCode::Char('.') => {
-                draft.show_hidden = !draft.show_hidden;
-                draft.selected = 0;
+            KeyCode::Backspace => {
+                draft.filter.pop();
+                draft.select_first_filter_match();
                 self.directory_offset = 0;
                 self.view = View::AddProject(draft);
+                Intent::None
+            }
+            KeyCode::Char('.') if draft.filter.is_empty() => {
+                draft.show_hidden = !draft.show_hidden;
+                draft.select_first_filter_match();
+                self.directory_offset = 0;
+                self.view = View::AddProject(draft);
+                Intent::None
+            }
+            KeyCode::Char(character) => {
+                draft.filter.push(character);
+                draft.select_first_filter_match();
+                self.directory_offset = 0;
+                self.view = View::AddProject(draft);
+                Intent::None
+            }
+            KeyCode::Enter
+                if draft.selected == 0
+                    && !draft.filter.is_empty()
+                    && draft.visible_directories().next().is_none() =>
+            {
                 Intent::None
             }
             KeyCode::Enter => self.activate_directory_choice(draft.clone(), draft.selected),
@@ -2124,10 +2164,18 @@ impl Picker {
 
         frame.render_widget(
             Paragraph::new(vec![
-                Line::from(Span::styled(
-                    "Folder",
-                    Style::default().fg(theme.muted_text),
-                )),
+                Line::from(vec![
+                    Span::styled("Folder  ", Style::default().fg(theme.muted_text)),
+                    Span::styled("/  ", Style::default().fg(theme.accent)),
+                    if draft.filter.is_empty() {
+                        Span::styled("type to filter...", Style::default().fg(theme.muted_text))
+                    } else {
+                        Span::styled(
+                            format!("{}_", draft.filter),
+                            Style::default().fg(theme.primary_text),
+                        )
+                    },
+                ]),
                 Line::from(Span::styled(
                     draft.current_dir.display().to_string(),
                     Style::default().fg(theme.primary_text),
@@ -3254,6 +3302,126 @@ mod tests {
         assert!(matches!(
             &picker.view,
             View::AddProject(draft) if !draft.show_hidden
+        ));
+    }
+
+    #[test]
+    fn typing_in_add_project_filters_directories_and_escape_clears_the_filter() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir(root.path().join("alpha-project")).unwrap();
+        fs::create_dir(root.path().join("beta-project")).unwrap();
+        let mut picker = picker();
+        picker.open_add_project_at(root.path().to_path_buf());
+        let area = Rect::new(0, 0, 120, 36);
+        let backend = TestBackend::new(area.width, area.height);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        for character in "bet".chars() {
+            assert_eq!(
+                picker.handle_key(key(KeyCode::Char(character))),
+                Intent::None
+            );
+        }
+        terminal.draw(|frame| picker.draw(frame)).unwrap();
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("/  bet_"));
+        assert!(rendered.contains("beta-project"));
+        assert!(!rendered.contains("alpha-project"));
+
+        assert_eq!(picker.handle_key(key(KeyCode::Backspace)), Intent::None);
+        assert!(matches!(
+            &picker.view,
+            View::AddProject(draft) if draft.filter == "be"
+        ));
+        assert_eq!(picker.handle_key(key(KeyCode::Esc)), Intent::None);
+        assert!(matches!(picker.view, View::AddProject(_)));
+        terminal.draw(|frame| picker.draw(frame)).unwrap();
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("alpha-project"));
+        assert!(rendered.contains("beta-project"));
+    }
+
+    #[test]
+    fn typing_a_directory_filter_selects_the_first_match_for_enter() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir(root.path().join("alpha-project")).unwrap();
+        fs::create_dir(root.path().join("beta-project")).unwrap();
+        let beta = fs::canonicalize(root.path().join("beta-project")).unwrap();
+        let mut picker = picker();
+        picker.open_add_project_at(root.path().to_path_buf());
+
+        for character in "bet".chars() {
+            picker.handle_key(key(KeyCode::Char(character)));
+        }
+
+        assert_eq!(picker.handle_key(key(KeyCode::Enter)), Intent::None);
+        assert!(matches!(
+            &picker.view,
+            View::AddProject(draft) if draft.current_dir == beta
+        ));
+    }
+
+    #[test]
+    fn enter_does_nothing_when_a_directory_filter_has_no_matches() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir(root.path().join("alpha-project")).unwrap();
+        let root_path = fs::canonicalize(root.path()).unwrap();
+        let mut picker = picker();
+        picker.open_add_project_at(root.path().to_path_buf());
+        for character in "missing".chars() {
+            picker.handle_key(key(KeyCode::Char(character)));
+        }
+
+        assert_eq!(picker.handle_key(key(KeyCode::Enter)), Intent::None);
+        assert!(matches!(
+            &picker.view,
+            View::AddProject(draft)
+                if draft.current_dir == root_path && draft.filter == "missing"
+        ));
+    }
+
+    #[test]
+    fn filter_characters_and_arrow_navigation_do_not_conflict() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir(root.path().join("jazz-one")).unwrap();
+        fs::create_dir(root.path().join("jazz-two")).unwrap();
+        let jazz_two = fs::canonicalize(root.path().join("jazz-two")).unwrap();
+        let mut picker = picker();
+        picker.open_add_project_at(root.path().to_path_buf());
+
+        for character in "jAzZ".chars() {
+            picker.handle_key(key(KeyCode::Char(character)));
+        }
+        assert!(matches!(
+            &picker.view,
+            View::AddProject(draft) if draft.filter == "jAzZ"
+        ));
+        assert_eq!(picker.handle_key(key(KeyCode::Esc)), Intent::None);
+        assert!(matches!(picker.view, View::AddProject(_)));
+        assert_eq!(picker.handle_key(key(KeyCode::Esc)), Intent::None);
+        assert_eq!(picker.view, View::Browser);
+
+        picker.open_add_project_at(root.path().to_path_buf());
+        for character in "jazz".chars() {
+            picker.handle_key(key(KeyCode::Char(character)));
+        }
+        picker.handle_key(key(KeyCode::Down));
+        assert_eq!(picker.handle_key(key(KeyCode::Enter)), Intent::None);
+        assert!(matches!(
+            &picker.view,
+            View::AddProject(draft) if draft.current_dir == jazz_two
         ));
     }
 
