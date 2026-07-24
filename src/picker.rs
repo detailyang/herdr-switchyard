@@ -18,10 +18,13 @@ use crossterm::{
 use ratatui::{
     Frame, Terminal,
     backend::CrosstermBackend,
-    layout::{Alignment, Constraint, Layout, Rect},
+    layout::{Alignment, Constraint, Layout, Margin, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Cell, Clear, HighlightSpacing, Paragraph, Row, Table, TableState},
+    widgets::{
+        Block, BorderType, Borders, Cell, Clear, HighlightSpacing, Paragraph, Row, Table,
+        TableState,
+    },
 };
 
 use crate::{
@@ -146,10 +149,15 @@ struct UiLayout {
 
 impl UiLayout {
     fn new(area: Rect) -> Self {
-        let panels = Layout::horizontal([Constraint::Percentage(34), Constraint::Percentage(66)])
-            .split(area);
+        let content = area.inner(Margin::new(2, 1));
+        let panels = Layout::horizontal([
+            Constraint::Percentage(32),
+            Constraint::Length(2),
+            Constraint::Min(1),
+        ])
+        .split(content);
         let projects_panel = panels[0];
-        let sessions_panel = panels[1];
+        let sessions_panel = panels[2];
         let projects_inner = Block::bordered().inner(projects_panel);
         let project_chunks = Layout::vertical([
             Constraint::Length(3),
@@ -1003,6 +1011,7 @@ impl Picker {
         let focused = self.focused_pane == FocusedPane::Projects;
         let border_color = if focused { theme.accent } else { theme.border };
         let panel = Block::bordered()
+            .border_type(BorderType::Rounded)
             .title(Line::from(Span::styled(
                 " Projects ",
                 Style::default()
@@ -1030,7 +1039,7 @@ impl Picker {
                 .block(
                     Block::new()
                         .borders(Borders::BOTTOM)
-                        .border_style(Style::default().fg(theme.border)),
+                        .border_style(Style::default().fg(theme.divider)),
                 ),
             layout.project_search,
         );
@@ -1056,7 +1065,7 @@ impl Picker {
             .block(
                 Block::new()
                     .borders(Borders::BOTTOM)
-                    .border_style(Style::default().fg(theme.border)),
+                    .border_style(Style::default().fg(theme.divider)),
             ),
             layout.add_project,
         );
@@ -1148,6 +1157,7 @@ impl Picker {
             },
         );
         let panel = Block::bordered()
+            .border_type(BorderType::Rounded)
             .title(title)
             .border_style(Style::default().fg(border_color))
             .style(Style::default().bg(theme.panel).fg(theme.primary_text));
@@ -1170,7 +1180,7 @@ impl Picker {
             .block(
                 Block::new()
                     .borders(Borders::BOTTOM)
-                    .border_style(Style::default().fg(theme.border)),
+                    .border_style(Style::default().fg(theme.divider)),
             ),
             layout.session_search,
         );
@@ -1198,7 +1208,7 @@ impl Picker {
             .block(
                 Block::new()
                     .borders(Borders::BOTTOM)
-                    .border_style(Style::default().fg(theme.border)),
+                    .border_style(Style::default().fg(theme.divider)),
             ),
             layout.new_session,
         );
@@ -1280,7 +1290,7 @@ impl Picker {
         frame.render_widget(
             Block::new()
                 .borders(Borders::TOP)
-                .border_style(Style::default().fg(theme.border))
+                .border_style(Style::default().fg(theme.divider))
                 .style(Style::default().bg(theme.panel)),
             layout.detail,
         );
@@ -1318,6 +1328,7 @@ impl Picker {
             ]))
             .block(
                 Block::bordered()
+                    .border_type(BorderType::Rounded)
                     .border_style(Style::default().fg(theme.accent))
                     .style(Style::default().bg(theme.panel)),
             ),
@@ -1330,6 +1341,7 @@ impl Picker {
         let layout = NewSessionLayout::new(area);
         frame.render_widget(Clear, layout.popup);
         let block = Block::bordered()
+            .border_type(BorderType::Rounded)
             .title(Span::styled(
                 " New session ",
                 Style::default()
@@ -1364,15 +1376,21 @@ impl Picker {
                 .add_modifier(Modifier::BOLD)
         };
         frame.render_widget(
-            Paragraph::new(" Create ")
-                .style(create_style)
-                .block(Block::bordered().border_style(create_style)),
+            Paragraph::new(" Create ").style(create_style).block(
+                Block::bordered()
+                    .border_type(BorderType::Rounded)
+                    .border_style(create_style),
+            ),
             layout.create,
         );
         frame.render_widget(
             Paragraph::new(" Cancel ")
                 .style(Style::default().fg(theme.secondary_text))
-                .block(Block::bordered().border_style(Style::default().fg(theme.border))),
+                .block(
+                    Block::bordered()
+                        .border_type(BorderType::Rounded)
+                        .border_style(Style::default().fg(theme.border)),
+                ),
             layout.cancel,
         );
     }
@@ -1382,6 +1400,7 @@ impl Picker {
         let layout = AddProjectLayout::new(area);
         frame.render_widget(Clear, layout.popup);
         let block = Block::bordered()
+            .border_type(BorderType::Rounded)
             .title(Span::styled(
                 " Add project ",
                 Style::default()
@@ -1406,7 +1425,7 @@ impl Picker {
             .block(
                 Block::new()
                     .borders(Borders::BOTTOM)
-                    .border_style(Style::default().fg(theme.border)),
+                    .border_style(Style::default().fg(theme.divider)),
             ),
             layout.path,
         );
@@ -1424,7 +1443,7 @@ impl Picker {
             .block(
                 Block::new()
                     .borders(Borders::BOTTOM)
-                    .border_style(Style::default().fg(theme.border)),
+                    .border_style(Style::default().fg(theme.divider)),
             ),
             layout.defaults,
         );
@@ -1500,6 +1519,7 @@ impl Picker {
                 .style(Style::default().bg(theme.panel).fg(theme.danger))
                 .block(
                     Block::bordered()
+                        .border_type(BorderType::Rounded)
                         .title(" Error ")
                         .border_style(Style::default().fg(theme.danger)),
                 ),
@@ -2694,26 +2714,34 @@ mod tests {
 
     #[test]
     fn configured_themes_change_the_rendered_panel_and_accent_colors() {
-        for (name, panel, accent) in [
+        for (name, canvas, panel, accent, divider) in [
             (
                 crate::model::ThemeName::JadeDark,
+                Color::Rgb(11, 15, 20),
                 Color::Rgb(17, 24, 33),
                 Color::Rgb(104, 165, 141),
+                Color::Rgb(41, 52, 61),
             ),
             (
                 crate::model::ThemeName::MidnightDark,
+                Color::Rgb(13, 16, 32),
                 Color::Rgb(21, 26, 46),
                 Color::Rgb(139, 156, 246),
+                Color::Rgb(53, 59, 92),
             ),
             (
                 crate::model::ThemeName::PaperLight,
-                Color::Rgb(255, 252, 245),
-                Color::Rgb(35, 122, 96),
+                Color::Rgb(244, 247, 244),
+                Color::Rgb(255, 255, 253),
+                Color::Rgb(20, 122, 88),
+                Color::Rgb(220, 228, 223),
             ),
             (
                 crate::model::ThemeName::SandLight,
+                Color::Rgb(239, 231, 216),
                 Color::Rgb(250, 244, 232),
                 Color::Rgb(139, 94, 52),
+                Color::Rgb(216, 203, 182),
             ),
         ] {
             let mut config = picker().config;
@@ -2724,9 +2752,26 @@ mod tests {
 
             terminal.draw(|frame| picker.draw(frame)).unwrap();
 
-            let top_left = terminal.backend().buffer().cell((0, 0)).unwrap();
-            assert_eq!(top_left.bg, panel, "panel for {name:?}");
-            assert_eq!(top_left.fg, accent, "accent for {name:?}");
+            let buffer = terminal.backend().buffer();
+            assert_eq!(
+                buffer.cell((0, 0)).unwrap().bg,
+                canvas,
+                "canvas for {name:?}"
+            );
+            let layout = UiLayout::new(Rect::new(0, 0, 120, 36));
+            let panel_corner = buffer
+                .cell((layout.projects_panel.x, layout.projects_panel.y))
+                .unwrap();
+            assert_eq!(panel_corner.bg, panel, "panel for {name:?}");
+            assert_eq!(panel_corner.fg, accent, "accent for {name:?}");
+            assert_eq!(
+                buffer
+                    .cell((layout.project_search.x, layout.project_search.bottom() - 1))
+                    .unwrap()
+                    .fg,
+                divider,
+                "divider for {name:?}"
+            );
         }
     }
 
