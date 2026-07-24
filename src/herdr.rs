@@ -467,6 +467,7 @@ impl Herdr for CliHerdr {
         &self,
         name: &str,
         kind: &str,
+        pane_id: &str,
         workspace_id: &str,
         tab_id: Option<&str>,
         args: &[String],
@@ -483,8 +484,27 @@ impl Herdr for CliHerdr {
         }
         command.extend([OsString::from("--"), OsString::from(kind)]);
         command.extend(args.iter().map(OsString::from));
-        self.run_json(command)?;
-        Ok(())
+        match self.run_json(command) {
+            Ok(_) => Ok(()),
+            Err(error) if format!("{error:#}").contains("unknown option: --workspace") => {
+                let mut legacy_command = vec![
+                    OsString::from("agent"),
+                    OsString::from("start"),
+                    OsString::from(name),
+                    OsString::from("--kind"),
+                    OsString::from(kind),
+                    OsString::from("--pane"),
+                    OsString::from(pane_id),
+                ];
+                if !args.is_empty() {
+                    legacy_command.push(OsString::from("--"));
+                    legacy_command.extend(args.iter().map(OsString::from));
+                }
+                self.run_json(legacy_command)?;
+                Ok(())
+            }
+            Err(error) => Err(error),
+        }
     }
 }
 

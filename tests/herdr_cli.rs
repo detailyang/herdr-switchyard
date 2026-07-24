@@ -144,6 +144,7 @@ fn starts_an_agent_in_the_selected_workspace_tab() {
         .start_agent(
             "demo-agent",
             "pi",
+            "w1:p4",
             "w1",
             Some("w1:t4"),
             &["--session".into(), "/sessions/demo.jsonl".into()],
@@ -156,6 +157,36 @@ fn starts_an_agent_in_the_selected_workspace_tab() {
     ));
     assert!(!calls.contains("--kind"));
     assert!(!calls.contains("--pane"));
+}
+
+#[test]
+fn falls_back_to_the_legacy_pane_agent_start_protocol() {
+    let root = tempdir().unwrap();
+    let executable = root.path().join("herdr");
+    let log = root.path().join("calls.log");
+    let script = format!(
+        r#"#!/bin/sh
+printf '%s\n' "$*" >> '{}'
+case " $* " in
+  *" --workspace "*) printf '%s\n' 'unknown option: --workspace' >&2; exit 2 ;;
+  *) printf '%s\n' '{{"result":{{"type":"ok"}}}}' ;;
+esac
+"#,
+        log.display()
+    );
+    fs::write(&executable, script).unwrap();
+    let mut permissions = fs::metadata(&executable).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&executable, permissions).unwrap();
+    let herdr = CliHerdr::new(&executable);
+
+    herdr
+        .start_agent("demo-agent", "pi", "w1:p4", "w1", Some("w1:t4"), &[])
+        .unwrap();
+
+    let calls = fs::read_to_string(log).unwrap();
+    assert!(calls.contains("agent start demo-agent --workspace w1 --tab w1:t4 -- pi"));
+    assert!(calls.contains("agent start demo-agent --kind pi --pane w1:p4"));
 }
 
 #[test]

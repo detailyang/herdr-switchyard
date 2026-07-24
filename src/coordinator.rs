@@ -57,6 +57,7 @@ pub trait Herdr {
         &self,
         name: &str,
         kind: &str,
+        pane_id: &str,
         workspace_id: &str,
         tab_id: Option<&str>,
         args: &[String],
@@ -156,6 +157,7 @@ pub fn activate_existing<H: Herdr>(
                     herdr,
                     project,
                     session,
+                    &created.pane_id,
                     &workspace.id,
                     Some(&created.tab_id),
                 )
@@ -164,6 +166,7 @@ pub fn activate_existing<H: Herdr>(
                     herdr,
                     project,
                     session,
+                    &created.pane_id,
                     &workspace.id,
                     Some(&created.tab_id),
                 )
@@ -209,6 +212,7 @@ pub fn activate_existing<H: Herdr>(
             herdr,
             project,
             session,
+            &opened.pane_id,
             &opened.workspace_id,
             opened.tab_id.as_deref(),
         )?;
@@ -218,6 +222,7 @@ pub fn activate_existing<H: Herdr>(
             herdr,
             project,
             session,
+            &opened.pane_id,
             &opened.workspace_id,
             opened.tab_id.as_deref(),
         )?;
@@ -282,6 +287,7 @@ pub fn create_session<H: Herdr>(
         herdr,
         project,
         state.sessions.last().expect("session was just registered"),
+        &created.workspace.pane_id,
         &created.workspace.workspace_id,
         created.workspace.tab_id.as_deref(),
     )?;
@@ -326,6 +332,7 @@ fn create_local_session<H: Herdr>(
             herdr,
             project,
             session,
+            &created.pane_id,
             &workspace.id,
             Some(&created.tab_id),
         ) {
@@ -346,6 +353,7 @@ fn create_local_session<H: Herdr>(
             herdr,
             project,
             session,
+            &opened.pane_id,
             &opened.workspace_id,
             opened.tab_id.as_deref(),
         )?;
@@ -518,6 +526,7 @@ fn start_new_agent<H: Herdr>(
     herdr: &H,
     project: &Project,
     session: &Session,
+    pane_id: &str,
     workspace_id: &str,
     tab_id: Option<&str>,
 ) -> Result<()> {
@@ -525,6 +534,7 @@ fn start_new_agent<H: Herdr>(
         .start_agent(
             &agent_name(project, &session.name),
             &project.agent,
+            pane_id,
             workspace_id,
             tab_id,
             &project.agent_args,
@@ -536,6 +546,7 @@ fn start_resumed_agent<H: Herdr>(
     herdr: &H,
     project: &Project,
     session: &Session,
+    pane_id: &str,
     workspace_id: &str,
     tab_id: Option<&str>,
 ) -> Result<()> {
@@ -543,6 +554,7 @@ fn start_resumed_agent<H: Herdr>(
     herdr.start_agent(
         &agent_name(project, &session.name),
         &project.agent,
+        pane_id,
         workspace_id,
         tab_id,
         &args,

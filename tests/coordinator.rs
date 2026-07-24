@@ -199,6 +199,7 @@ impl Herdr for FakeHerdr {
         &self,
         name: &str,
         kind: &str,
+        _pane_id: &str,
         workspace_id: &str,
         tab_id: Option<&str>,
         args: &[String],
