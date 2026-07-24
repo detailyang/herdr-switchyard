@@ -1706,11 +1706,13 @@ impl Picker {
             ])
             .height(ROW_HEIGHT)
         });
-        let selected = active_project_id.and_then(|id| {
-            filtered
-                .iter()
-                .position(|index| self.config.projects[*index].id == id)
-        });
+        let selected = active_project_id
+            .and_then(|id| {
+                filtered
+                    .iter()
+                    .position(|index| self.config.projects[*index].id == id)
+            })
+            .filter(|_| focused);
         let table = Table::new(
             rows,
             [
@@ -1862,7 +1864,9 @@ impl Picker {
             ])
             .height(ROW_HEIGHT)
         });
-        let selected = self.displayed_session_position(!session_indices.is_empty());
+        let selected = self
+            .displayed_session_position(!session_indices.is_empty())
+            .filter(|_| focused);
         let table = Table::new(
             rows,
             [
@@ -4132,6 +4136,45 @@ mod tests {
         };
         assert!(project_row_text(layout.project_rows.y).contains("Demo"));
         assert!(project_row_text(layout.project_rows.y + 1).contains("Other"));
+    }
+
+    #[test]
+    fn only_the_focused_pane_shows_an_active_row_highlight() {
+        let mut picker = picker_with_session();
+        let area = Rect::new(0, 0, 120, 36);
+        let layout = UiLayout::new(area);
+        let backend = TestBackend::new(area.width, area.height);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal.draw(|frame| picker.draw(frame)).unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let project_marker = buffer
+            .cell((layout.project_rows.x, layout.project_rows.y))
+            .unwrap();
+        let session_marker = buffer
+            .cell((layout.session_rows.x, layout.session_rows.y))
+            .unwrap();
+        assert_eq!(project_marker.symbol(), "▌");
+        assert_eq!(project_marker.bg, picker.theme.selected_surface);
+        assert_eq!(session_marker.symbol(), " ");
+        assert_eq!(session_marker.bg, picker.theme.panel);
+
+        picker.handle_key(key(KeyCode::Char('l')));
+        picker.handle_key(key(KeyCode::Char('j')));
+        terminal.draw(|frame| picker.draw(frame)).unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let project_marker = buffer
+            .cell((layout.project_rows.x, layout.project_rows.y))
+            .unwrap();
+        let session_marker = buffer
+            .cell((layout.session_rows.x, layout.session_rows.y))
+            .unwrap();
+        assert_eq!(project_marker.symbol(), " ");
+        assert_eq!(project_marker.bg, picker.theme.panel);
+        assert_eq!(session_marker.symbol(), "▌");
+        assert_eq!(session_marker.bg, picker.theme.selected_surface);
     }
 
     #[test]
