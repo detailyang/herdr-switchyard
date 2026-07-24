@@ -226,22 +226,21 @@ printf '%s\n' '{{"result":{{"type":"worktree_created","workspace":{{"workspace_i
             .unwrap()
             .success()
     );
+    let temporary_prefix = format!("{}-", std::process::id());
+    let temporary_ref_prefix = format!("refs/heads/{temporary_prefix}");
     let temporary_branches = Command::new("git")
         .args(["-C"])
         .arg(repository)
-        .args([
-            "for-each-ref",
-            "--format=%(refname)",
-            "refs/heads/switchyard-session-",
-        ])
+        .args(["for-each-ref", "--format=%(refname)", &temporary_ref_prefix])
         .output()
         .unwrap();
     assert!(temporary_branches.status.success());
     assert!(temporary_branches.stdout.is_empty());
+    let temporary_config_pattern = format!("^branch\\.{}-", std::process::id());
     let temporary_branch_config = Command::new("git")
         .args(["-C"])
         .arg(&configured_project.path)
-        .args(["config", "--get-regexp", "^branch\\.switchyard-session-"])
+        .args(["config", "--get-regexp", &temporary_config_pattern])
         .output()
         .unwrap();
     assert_eq!(temporary_branch_config.status.code(), Some(1));
@@ -249,7 +248,7 @@ printf '%s\n' '{{"result":{{"type":"worktree_created","workspace":{{"workspace_i
 
     let calls = fs::read_to_string(log).unwrap();
     assert!(calls.contains("worktree create --workspace w-root"));
-    assert!(calls.contains("--branch switchyard-session-"));
+    assert!(calls.contains(&format!("--branch {temporary_prefix}")));
     assert!(calls.contains(&format!(
         "--base {base_commit} --label Improve login flow --focus --json"
     )));
@@ -285,7 +284,7 @@ fn returns_the_created_workspace_with_a_warning_when_detaching_fails() {
             .pending_temporary_branch
             .as_deref()
             .unwrap()
-            .starts_with("switchyard-session-")
+            .starts_with(&format!("{}-", std::process::id()))
     );
 }
 

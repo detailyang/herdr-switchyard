@@ -28,10 +28,7 @@ pub(crate) fn detached_worktree_plan(
         .context("read system clock")?
         .as_nanos();
     for attempt in 0..16 {
-        let temporary_branch = format!(
-            "switchyard-session-{}-{seed:x}-{attempt}",
-            std::process::id()
-        );
+        let temporary_branch = format!("{}-{seed:x}-{attempt}", std::process::id());
         let reference = format!("refs/heads/{temporary_branch}");
         let status = Command::new("git")
             .arg("-C")
@@ -610,6 +607,21 @@ mod tests {
         assert!(configured.status.success());
 
         assert_eq!(preferred_initial_branch(&repository).unwrap(), "trunk");
+    }
+
+    #[test]
+    fn temporary_branch_names_omit_the_redundant_switchyard_session_prefix() {
+        let root = tempfile::tempdir().unwrap();
+        let repository = root.path().join("repository");
+        initialize_test_repository(&repository);
+
+        let plan = detached_worktree_plan(&repository, "main").unwrap();
+
+        assert!(!plan.temporary_branch.contains("switchyard-session"));
+        assert!(
+            plan.temporary_branch
+                .starts_with(&format!("{}-", std::process::id()))
+        );
     }
 
     #[test]
