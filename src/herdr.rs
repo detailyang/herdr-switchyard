@@ -62,6 +62,14 @@ impl CliHerdr {
         I: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
     {
+        serde_json::from_slice(&self.run(args)?).context("parse Herdr JSON response")
+    }
+
+    fn run<I, S>(&self, args: I) -> Result<Vec<u8>>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
         let output = Command::new(&self.executable)
             .args(args)
             .output()
@@ -73,7 +81,7 @@ impl CliHerdr {
                 .unwrap_or_else(|| String::from_utf8_lossy(&output.stderr).trim().to_owned());
             bail!("Herdr command failed: {message}");
         }
-        serde_json::from_slice(&output.stdout).context("parse Herdr JSON response")
+        Ok(output.stdout)
     }
 }
 
@@ -188,10 +196,14 @@ impl Herdr for CliHerdr {
             OsString::from("--focus"),
             OsString::from("--json"),
         ];
-        let (mut workspace, response) = match self.run_json(args).and_then(|response| {
-            let workspace = opened_workspace(&response)?;
-            Ok((workspace, response))
-        }) {
+        let output = self.run(args)?;
+        let create_response = serde_json::from_slice::<Value>(&output)
+            .context("parse Herdr JSON response")
+            .and_then(|response| {
+                let workspace = opened_workspace(&response)?;
+                Ok((workspace, response))
+            });
+        let (mut workspace, response) = match create_response {
             Ok(created) => created,
             Err(create_error) => {
                 let Some(worktree_path) =

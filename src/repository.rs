@@ -1,5 +1,7 @@
 use std::{
-    fs, io,
+    fs,
+    hash::{DefaultHasher, Hash, Hasher},
+    io,
     path::{Path, PathBuf},
     process::Command,
     time::{SystemTime, UNIX_EPOCH},
@@ -21,14 +23,22 @@ pub(crate) fn detached_worktree_plan(
     repository: &Path,
     base: &str,
 ) -> Result<DetachedWorktreePlan> {
-    let base_ref = format!("{base}^{{commit}}");
-    let base_commit = git_stdout(repository, ["rev-parse", &base_ref])?;
     let seed = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .context("read system clock")?
         .as_nanos();
+    detached_worktree_plan_at(repository, base, seed)
+}
+
+fn detached_worktree_plan_at(
+    repository: &Path,
+    base: &str,
+    seed: u128,
+) -> Result<DetachedWorktreePlan> {
+    let base_ref = format!("{base}^{{commit}}");
+    let base_commit = git_stdout(repository, ["rev-parse", &base_ref])?;
     for attempt in 0..16 {
-        let temporary_branch = format!("{}-{seed:x}-{attempt}", std::process::id());
+        let temporary_branch = short_worktree_name(seed, attempt);
         let reference = format!("refs/heads/{temporary_branch}");
         let status = Command::new("git")
             .arg("-C")
@@ -48,6 +58,12 @@ pub(crate) fn detached_worktree_plan(
         }
     }
     bail!("Could not allocate a temporary Git branch")
+}
+
+fn short_worktree_name(seed: u128, attempt: u64) -> String {
+    let mut hasher = DefaultHasher::new();
+    (seed, std::process::id(), attempt).hash(&mut hasher);
+    format!("{:010x}", hasher.finish() & 0xff_ffff_ffff)
 }
 
 pub(crate) fn detach_created_worktree(
@@ -641,18 +657,34 @@ mod tests {
     }
 
     #[test]
-    fn temporary_branch_names_omit_the_redundant_switchyard_session_prefix() {
+    fn temporary_branch_names_are_short_hex_tokens() {
         let root = tempfile::tempdir().unwrap();
         let repository = root.path().join("repository");
         initialize_test_repository(&repository);
 
         let plan = detached_worktree_plan(&repository, "main").unwrap();
 
-        assert!(!plan.temporary_branch.contains("switchyard-session"));
+        assert_eq!(plan.temporary_branch.len(), 10);
         assert!(
             plan.temporary_branch
-                .starts_with(&format!("{}-", std::process::id()))
+                .chars()
+                .all(|character| character.is_ascii_hexdigit())
         );
+    }
+
+    #[test]
+    fn temporary_branch_allocation_retries_with_another_short_token() {
+        let root = tempfile::tempdir().unwrap();
+        let repository = root.path().join("repository");
+        initialize_test_repository(&repository);
+        let seed = 42;
+        let first = short_worktree_name(seed, 0);
+        run_git(&repository, ["branch", &first, "main"]).unwrap();
+
+        let plan = detached_worktree_plan_at(&repository, "main", seed).unwrap();
+
+        assert_eq!(plan.temporary_branch, short_worktree_name(seed, 1));
+        assert_ne!(plan.temporary_branch, first);
     }
 
     #[test]

@@ -226,17 +226,33 @@ printf '%s\n' '{{"result":{{"type":"worktree_created","workspace":{{"workspace_i
             .unwrap()
             .success()
     );
-    let temporary_prefix = format!("{}-", std::process::id());
-    let temporary_ref_prefix = format!("refs/heads/{temporary_prefix}");
+    let calls = fs::read_to_string(log).unwrap();
+    let create_call = calls
+        .lines()
+        .find(|line| line.starts_with("worktree create "))
+        .unwrap();
+    let mut arguments = create_call.split_whitespace();
+    let temporary_branch = arguments
+        .by_ref()
+        .find(|argument| *argument == "--branch")
+        .and_then(|_| arguments.next())
+        .unwrap();
+    assert_eq!(temporary_branch.len(), 10);
+    assert!(
+        temporary_branch
+            .chars()
+            .all(|character| character.is_ascii_hexdigit())
+    );
+    let temporary_ref = format!("refs/heads/{temporary_branch}");
     let temporary_branches = Command::new("git")
         .args(["-C"])
         .arg(repository)
-        .args(["for-each-ref", "--format=%(refname)", &temporary_ref_prefix])
+        .args(["for-each-ref", "--format=%(refname)", &temporary_ref])
         .output()
         .unwrap();
     assert!(temporary_branches.status.success());
     assert!(temporary_branches.stdout.is_empty());
-    let temporary_config_pattern = format!("^branch\\.{}-", std::process::id());
+    let temporary_config_pattern = format!("^branch\\.{temporary_branch}\\.");
     let temporary_branch_config = Command::new("git")
         .args(["-C"])
         .arg(&configured_project.path)
@@ -246,9 +262,8 @@ printf '%s\n' '{{"result":{{"type":"worktree_created","workspace":{{"workspace_i
     assert_eq!(temporary_branch_config.status.code(), Some(1));
     assert!(temporary_branch_config.stdout.is_empty());
 
-    let calls = fs::read_to_string(log).unwrap();
     assert!(calls.contains("worktree create --workspace w-root"));
-    assert!(calls.contains(&format!("--branch {temporary_prefix}")));
+    assert!(calls.contains(&format!("--branch {temporary_branch}")));
     assert!(calls.contains(&format!(
         "--base {base_commit} --label Improve login flow --focus --json"
     )));
@@ -279,12 +294,12 @@ fn returns_the_created_workspace_with_a_warning_when_detaching_fails() {
     let calls = fs::read_to_string(log).unwrap();
     assert!(calls.contains("pane get w2:p1"));
     assert!(calls.contains("tab rename w2:t1 Improve login flow"));
+    let pending_branch = created.pending_temporary_branch.as_deref().unwrap();
+    assert_eq!(pending_branch.len(), 10);
     assert!(
-        created
-            .pending_temporary_branch
-            .as_deref()
-            .unwrap()
-            .starts_with(&format!("{}-", std::process::id()))
+        pending_branch
+            .chars()
+            .all(|character| character.is_ascii_hexdigit())
     );
 }
 
@@ -352,6 +367,58 @@ printf '%s\n' '{{invalid-json'
     assert!(calls.contains("--label Recover response --focus --json"));
     assert!(calls.contains("pane get w2:p1"));
     assert!(calls.contains("tab rename w2:t1 Recover response"));
+}
+
+#[test]
+fn does_not_recover_another_worktree_after_the_create_command_fails() {
+    let root = tempdir().unwrap();
+    let repository = root.path().join("demo");
+    let other_checkout = root.path().join("other-checkout");
+    initialize_repository(&repository);
+    let executable = root.path().join("herdr");
+    let log = root.path().join("calls.log");
+    let script = format!(
+        r#"#!/bin/sh
+printf '%s\n' "$*" >> '{}'
+if [ "$1 $2" = 'worktree open' ]; then
+  printf '%s\n' '{{"result":{{"type":"worktree_opened","workspace":{{"workspace_id":"other"}},"root_pane":{{"pane_id":"other:p1"}},"worktree":{{"path":"{}"}}}}}}'
+  exit 0
+fi
+cwd='{}'
+branch=''
+base=''
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --cwd) cwd="$2"; shift 2 ;;
+    --branch) branch="$2"; shift 2 ;;
+    --base) base="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+git -C "$cwd" worktree add -b "$branch" '{}' "$base" >/dev/null 2>&1 || exit 1
+printf '%s\n' '{{"error":{{"message":"simulated create collision"}}}}' >&2
+exit 1
+"#,
+        log.display(),
+        other_checkout.display(),
+        repository.display(),
+        other_checkout.display(),
+    );
+    fs::write(&executable, script).unwrap();
+    let mut permissions = fs::metadata(&executable).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&executable, permissions).unwrap();
+    let herdr = CliHerdr::new(&executable);
+    let mut configured_project = project();
+    configured_project.path = repository;
+
+    let error = herdr
+        .create_worktree(&configured_project, "w-root", "Collision")
+        .unwrap_err();
+
+    assert!(format!("{error:#}").contains("simulated create collision"));
+    let calls = fs::read_to_string(log).unwrap();
+    assert!(!calls.contains("worktree open"));
 }
 
 #[test]
