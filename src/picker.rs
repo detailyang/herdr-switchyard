@@ -2365,6 +2365,8 @@ mod tests {
             created_at_ms: 1,
             last_used_at_ms: 2,
             agent_session: None,
+            tab_id: None,
+            tab_namespace: None,
         });
         picker
     }
@@ -2381,6 +2383,8 @@ mod tests {
                 created_at_ms: index,
                 last_used_at_ms: index,
                 agent_session: None,
+                tab_id: None,
+                tab_namespace: None,
             });
         }
         picker
@@ -3571,6 +3575,8 @@ mod tests {
             created_at_ms: 20,
             last_used_at_ms: 20,
             agent_session: None,
+            tab_id: None,
+            tab_namespace: None,
         });
         picker.handle_key(key(KeyCode::Enter));
         for _ in 0..5 {

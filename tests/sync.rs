@@ -32,6 +32,10 @@ impl Herdr for SnapshotHerdr {
         Ok(self.snapshot.clone())
     }
 
+    fn runtime_namespace(&self) -> Option<String> {
+        None
+    }
+
     fn ensure_project_workspace(&self, _project: &Project) -> Result<String> {
         bail!("not used")
     }
@@ -72,6 +76,16 @@ impl Herdr for SnapshotHerdr {
     }
 
     fn focus_agent(&self, _pane_id: &str) -> Result<()> {
+        bail!("not used")
+    }
+
+    fn find_reusable_session_pane(
+        &self,
+        _workspace_id: &str,
+        _session_name: &str,
+        _cwd: &Path,
+        _owned_tab_id: Option<&str>,
+    ) -> Result<Option<CreatedAgentPane>> {
         bail!("not used")
     }
 
@@ -153,6 +167,8 @@ fn concurrent_hooks_cannot_commit_an_older_snapshot_last() {
                 created_at_ms: 1,
                 last_used_at_ms: 1,
                 agent_session: None,
+                tab_id: None,
+                tab_namespace: None,
             });
             Ok(())
         })

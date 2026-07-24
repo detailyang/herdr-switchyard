@@ -64,6 +64,8 @@ fn project_config_and_session_state_round_trip_in_separate_files() {
                 created_at_ms: 1,
                 last_used_at_ms: 2,
                 agent_session: None,
+                tab_id: Some("w1:t2".into()),
+                tab_namespace: Some("/sockets/default".into()),
             });
             Ok(())
         })
@@ -71,6 +73,16 @@ fn project_config_and_session_state_round_trip_in_separate_files() {
 
     assert_eq!(store.load_config().unwrap(), config);
     assert_eq!(store.load_state().unwrap().sessions[0].name, "feat/one");
+    assert_eq!(
+        store.load_state().unwrap().sessions[0].tab_id.as_deref(),
+        Some("w1:t2")
+    );
+    assert_eq!(
+        store.load_state().unwrap().sessions[0]
+            .tab_namespace
+            .as_deref(),
+        Some("/sockets/default")
+    );
     assert!(store.config_path().exists());
     assert!(store.state_path().exists());
 }
@@ -167,6 +179,8 @@ fn project_removal_is_blocked_by_sessions_under_the_same_state_lock() {
                 created_at_ms: 1,
                 last_used_at_ms: 2,
                 agent_session: None,
+                tab_id: None,
+                tab_namespace: None,
             });
             Ok(())
         })
@@ -193,6 +207,8 @@ fn state_changes_survive_a_later_operation_error() {
             created_at_ms: 1,
             last_used_at_ms: 1,
             agent_session: None,
+            tab_id: None,
+            tab_namespace: None,
         });
         Err(anyhow!("agent failed after worktree creation"))
     });

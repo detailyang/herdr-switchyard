@@ -89,6 +89,10 @@ pub struct Session {
     pub last_used_at_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_session: Option<AgentSession>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tab_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tab_namespace: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -132,6 +136,7 @@ pub struct RuntimeSnapshot {
 pub struct OpenedWorkspace {
     pub workspace_id: String,
     pub pane_id: String,
+    pub tab_id: Option<String>,
     pub worktree_path: PathBuf,
 }
 

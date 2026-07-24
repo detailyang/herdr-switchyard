@@ -13,6 +13,7 @@ use crate::{
 
 pub trait Herdr {
     fn snapshot(&self) -> Result<RuntimeSnapshot>;
+    fn runtime_namespace(&self) -> Option<String>;
     fn ensure_project_workspace(&self, project: &Project) -> Result<String>;
     fn create_worktree(
         &self,
@@ -35,6 +36,13 @@ pub trait Herdr {
     fn open_local(&self, project: &Project, session: &Session) -> Result<OpenedWorkspace>;
     fn focus_workspace(&self, workspace_id: &str) -> Result<()>;
     fn focus_agent(&self, pane_id: &str) -> Result<()>;
+    fn find_reusable_session_pane(
+        &self,
+        workspace_id: &str,
+        session_name: &str,
+        cwd: &Path,
+        owned_tab_id: Option<&str>,
+    ) -> Result<Option<CreatedAgentPane>>;
     fn create_agent_pane(
         &self,
         workspace_id: &str,
@@ -108,15 +116,38 @@ pub fn activate_existing<H: Herdr>(
             herdr
                 .focus_workspace(&workspace.id)
                 .with_context(|| format!("focus workspace for session {session_name:?}"))?;
-            let created =
-                herdr.create_agent_pane(&workspace.id, &session.name, &session.worktree_path)?;
+            let runtime_namespace = herdr.runtime_namespace();
+            let owned_tab_id = runtime_namespace
+                .as_ref()
+                .filter(|namespace| session.tab_namespace.as_ref() == Some(*namespace))
+                .and(session.tab_id.as_deref());
+            let reusable = herdr
+                .find_reusable_session_pane(
+                    &workspace.id,
+                    &session.name,
+                    &session.worktree_path,
+                    owned_tab_id,
+                )
+                .with_context(|| format!("find existing tab for session {session_name:?}"))?;
+            let (created, close_on_failure) = if let Some(pane) = reusable {
+                (pane, false)
+            } else {
+                (
+                    herdr.create_agent_pane(
+                        &workspace.id,
+                        &session.name,
+                        &session.worktree_path,
+                    )?,
+                    true,
+                )
+            };
             let start_result = if recovered_pending_detach {
                 start_new_agent(herdr, project, session, &created.pane_id)
             } else {
                 start_resumed_agent(herdr, project, session, &created.pane_id)
             };
             if let Err(start_error) = start_result {
-                if let Err(close_error) = herdr.close_tab(&created.tab_id) {
+                if close_on_failure && let Err(close_error) = herdr.close_tab(&created.tab_id) {
                     return Err(start_error.context(format!(
                         "also failed to close new agent tab {}: {close_error:#}",
                         created.tab_id
@@ -126,6 +157,13 @@ pub fn activate_existing<H: Herdr>(
             }
             if recovered_pending_detach {
                 session.pending_temporary_branch = None;
+            }
+            session.tab_id = Some(created.tab_id.clone());
+            session.tab_namespace = runtime_namespace;
+            if !close_on_failure {
+                herdr
+                    .focus_agent(&created.pane_id)
+                    .with_context(|| format!("focus agent in session {session_name:?}"))?;
             }
         }
         return Ok(Activation::Focused);
@@ -150,6 +188,8 @@ pub fn activate_existing<H: Herdr>(
     } else {
         start_resumed_agent(herdr, project, session, &opened.pane_id)?;
     }
+    session.tab_id = opened.tab_id;
+    session.tab_namespace = herdr.runtime_namespace();
     Ok(Activation::Opened)
 }
 
@@ -197,6 +237,8 @@ pub fn create_session<H: Herdr>(
         created_at_ms: now_ms,
         last_used_at_ms: now_ms,
         agent_session: None,
+        tab_id: created.workspace.tab_id.clone(),
+        tab_namespace: herdr.runtime_namespace(),
     });
 
     if detach_is_pending && let Some(warning) = created.warning.as_deref() {
@@ -231,10 +273,12 @@ fn create_local_session<H: Herdr>(
         created_at_ms: now_ms,
         last_used_at_ms: now_ms,
         agent_session: None,
+        tab_id: None,
+        tab_namespace: None,
     });
     let session = state.sessions.last().expect("session was just registered");
 
-    if let Some(workspace) = snapshot
+    let tab_id = if let Some(workspace) = snapshot
         .workspaces
         .iter()
         .find(|workspace| same_path(&workspace.checkout_path, &project.path))
@@ -252,12 +296,24 @@ fn create_local_session<H: Herdr>(
             }
             return Err(start_error);
         }
+        Some(created.tab_id)
     } else {
         let opened = herdr
             .open_local(project, session)
             .with_context(|| format!("open local session {session_name:?}"))?;
         start_new_agent(herdr, project, session, &opened.pane_id)?;
-    }
+        opened.tab_id
+    };
+    state
+        .sessions
+        .last_mut()
+        .expect("session was registered")
+        .tab_id = tab_id;
+    state
+        .sessions
+        .last_mut()
+        .expect("session was registered")
+        .tab_namespace = herdr.runtime_namespace();
     Ok(Activation::Created)
 }
 

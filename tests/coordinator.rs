@@ -19,6 +19,8 @@ use herdr_switchyard::{
 struct FakeHerdr {
     snapshot: RuntimeSnapshot,
     calls: RefCell<Vec<String>>,
+    reusable_session_pane: Option<CreatedAgentPane>,
+    runtime_namespace: Option<String>,
     fail_start: bool,
     create_warning: Option<String>,
     create_pending_detach: bool,
@@ -27,6 +29,10 @@ struct FakeHerdr {
 impl Herdr for FakeHerdr {
     fn snapshot(&self) -> Result<RuntimeSnapshot> {
         Ok(self.snapshot.clone())
+    }
+
+    fn runtime_namespace(&self) -> Option<String> {
+        self.runtime_namespace.clone()
     }
 
     fn ensure_project_workspace(&self, project: &Project) -> Result<String> {
@@ -50,6 +56,7 @@ impl Herdr for FakeHerdr {
             workspace: OpenedWorkspace {
                 workspace_id: "w2".into(),
                 pane_id: "w2:p1".into(),
+                tab_id: Some("w2:t1".into()),
                 worktree_path: PathBuf::from("/worktrees/demo/feat-one"),
             },
             pending_temporary_branch: self
@@ -85,6 +92,7 @@ impl Herdr for FakeHerdr {
         Ok(OpenedWorkspace {
             workspace_id: "w2".into(),
             pane_id: "w2:p1".into(),
+            tab_id: Some("w2:t1".into()),
             worktree_path: session.worktree_path.clone(),
         })
     }
@@ -96,6 +104,7 @@ impl Herdr for FakeHerdr {
         Ok(OpenedWorkspace {
             workspace_id: "w2".into(),
             pane_id: "w2:p1".into(),
+            tab_id: Some("w2:t1".into()),
             worktree_path: project.path.clone(),
         })
     }
@@ -112,6 +121,23 @@ impl Herdr for FakeHerdr {
             .borrow_mut()
             .push(format!("focus-agent:{pane_id}"));
         Ok(())
+    }
+
+    fn find_reusable_session_pane(
+        &self,
+        workspace_id: &str,
+        session_name: &str,
+        cwd: &Path,
+        owned_tab_id: Option<&str>,
+    ) -> Result<Option<CreatedAgentPane>> {
+        if self.reusable_session_pane.is_some() {
+            self.calls.borrow_mut().push(format!(
+                "reuse-agent-pane:{workspace_id}:{session_name}:{}:{}",
+                cwd.display(),
+                owned_tab_id.unwrap_or("legacy")
+            ));
+        }
+        Ok(self.reusable_session_pane.clone())
     }
 
     fn create_agent_pane(
@@ -167,6 +193,8 @@ fn session(path: impl AsRef<Path>) -> Session {
         created_at_ms: 1,
         last_used_at_ms: 1,
         agent_session: None,
+        tab_id: None,
+        tab_namespace: None,
     }
 }
 
@@ -219,6 +247,7 @@ fn creates_a_worktree_records_it_and_starts_the_project_agent() {
     assert_eq!(result, Activation::Created);
     assert_eq!(state.sessions.len(), 1);
     assert_eq!(state.sessions[0].mode, SessionMode::Worktree);
+    assert_eq!(state.sessions[0].tab_id.as_deref(), Some("w2:t1"));
     assert_eq!(
         herdr.calls.into_inner(),
         [
@@ -749,6 +778,7 @@ fn creates_a_dedicated_tab_when_only_an_unrelated_agent_is_running() {
 
     activate_existing(&herdr, &project(), &mut state, "feat/one", 42).unwrap();
 
+    assert_eq!(state.sessions[0].tab_id.as_deref(), Some("w1:t4"));
     assert_eq!(
         herdr.calls.into_inner(),
         [
@@ -759,6 +789,123 @@ fn creates_a_dedicated_tab_when_only_an_unrelated_agent_is_running() {
                 agent_name(&project(), "feat/one")
             )
         ]
+    );
+}
+
+#[test]
+fn reuses_an_existing_session_tab_when_its_agent_has_exited() {
+    let herdr = FakeHerdr {
+        snapshot: RuntimeSnapshot {
+            workspaces: vec![RuntimeWorkspace {
+                id: "w1".into(),
+                checkout_path: PathBuf::from("/worktrees/demo/feat-one"),
+            }],
+            agents: Vec::new(),
+        },
+        reusable_session_pane: Some(CreatedAgentPane {
+            tab_id: "w1:t3".into(),
+            pane_id: "w1:p3".into(),
+        }),
+        runtime_namespace: Some("/sockets/default".into()),
+        ..Default::default()
+    };
+    let mut stored = session("/worktrees/demo/feat-one");
+    stored.tab_id = Some("w1:t3".into());
+    stored.tab_namespace = Some("/sockets/default".into());
+    let mut state = State {
+        sessions: vec![stored],
+        ..Default::default()
+    };
+
+    activate_existing(&herdr, &project(), &mut state, "feat/one", 42).unwrap();
+
+    assert_eq!(state.sessions[0].tab_id.as_deref(), Some("w1:t3"));
+    assert_eq!(
+        herdr.calls.into_inner(),
+        [
+            "focus:w1".to_owned(),
+            "reuse-agent-pane:w1:feat/one:/worktrees/demo/feat-one:w1:t3".to_owned(),
+            format!(
+                "start:{}:codex:w1:p3:resume",
+                agent_name(&project(), "feat/one")
+            ),
+            "focus-agent:w1:p3".to_owned(),
+        ]
+    );
+}
+
+#[test]
+fn does_not_trust_a_tab_id_from_another_herdr_runtime() {
+    let herdr = FakeHerdr {
+        snapshot: RuntimeSnapshot {
+            workspaces: vec![RuntimeWorkspace {
+                id: "w1".into(),
+                checkout_path: PathBuf::from("/worktrees/demo/feat-one"),
+            }],
+            agents: Vec::new(),
+        },
+        reusable_session_pane: Some(CreatedAgentPane {
+            tab_id: "w1:t3".into(),
+            pane_id: "w1:p3".into(),
+        }),
+        runtime_namespace: Some("/sockets/current".into()),
+        ..Default::default()
+    };
+    let mut stored = session("/worktrees/demo/feat-one");
+    stored.tab_id = Some("w1:t9".into());
+    stored.tab_namespace = Some("/sockets/other".into());
+    let mut state = State {
+        sessions: vec![stored],
+        ..Default::default()
+    };
+
+    activate_existing(&herdr, &project(), &mut state, "feat/one", 42).unwrap();
+
+    assert!(
+        herdr
+            .calls
+            .borrow()
+            .iter()
+            .any(|call| call.ends_with(":legacy"))
+    );
+    assert_eq!(state.sessions[0].tab_id.as_deref(), Some("w1:t3"));
+    assert_eq!(
+        state.sessions[0].tab_namespace.as_deref(),
+        Some("/sockets/current")
+    );
+}
+
+#[test]
+fn does_not_close_a_reused_session_tab_when_agent_start_fails() {
+    let herdr = FakeHerdr {
+        snapshot: RuntimeSnapshot {
+            workspaces: vec![RuntimeWorkspace {
+                id: "w1".into(),
+                checkout_path: PathBuf::from("/worktrees/demo/feat-one"),
+            }],
+            agents: Vec::new(),
+        },
+        reusable_session_pane: Some(CreatedAgentPane {
+            tab_id: "w1:t3".into(),
+            pane_id: "w1:p3".into(),
+        }),
+        fail_start: true,
+        ..Default::default()
+    };
+    let mut state = State {
+        sessions: vec![session("/worktrees/demo/feat-one")],
+        ..Default::default()
+    };
+
+    let error = activate_existing(&herdr, &project(), &mut state, "feat/one", 42).unwrap_err();
+
+    assert!(error.to_string().contains("agent start failed"));
+    assert!(
+        !herdr
+            .calls
+            .into_inner()
+            .iter()
+            .any(|call| call.starts_with("close-tab:"))
     );
 }
 

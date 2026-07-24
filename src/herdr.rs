@@ -20,20 +20,24 @@ use crate::{
 #[derive(Debug, Clone)]
 pub struct CliHerdr {
     executable: PathBuf,
+    runtime_namespace: Option<String>,
 }
 
 impl CliHerdr {
     pub fn from_environment() -> Self {
-        Self::new(
+        let mut client = Self::new(
             std::env::var_os("HERDR_BIN_PATH")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from("herdr")),
-        )
+        );
+        client.runtime_namespace = std::env::var("HERDR_SOCKET_PATH").ok();
+        client
     }
 
     pub fn new(executable: impl Into<PathBuf>) -> Self {
         Self {
             executable: executable.into(),
+            runtime_namespace: None,
         }
     }
 
@@ -122,6 +126,10 @@ impl Herdr for CliHerdr {
         Ok(RuntimeSnapshot { workspaces, agents })
     }
 
+    fn runtime_namespace(&self) -> Option<String> {
+        self.runtime_namespace.clone()
+    }
+
     fn ensure_project_workspace(&self, project: &Project) -> Result<String> {
         let workspace_response = self.run_json(["workspace", "list"])?;
         let pane_response = self.run_json(["pane", "list"])?;
@@ -180,7 +188,7 @@ impl Herdr for CliHerdr {
             OsString::from("--focus"),
             OsString::from("--json"),
         ];
-        let (workspace, response) = match self.run_json(args).and_then(|response| {
+        let (mut workspace, response) = match self.run_json(args).and_then(|response| {
             let workspace = opened_workspace(&response)?;
             Ok((workspace, response))
         }) {
@@ -220,6 +228,7 @@ impl Herdr for CliHerdr {
                             workspace: OpenedWorkspace {
                                 workspace_id: String::new(),
                                 pane_id: String::new(),
+                                tab_id: None,
                                 worktree_path,
                             },
                             pending_temporary_branch: Some(plan.temporary_branch.clone()),
@@ -231,10 +240,13 @@ impl Herdr for CliHerdr {
                 }
             }
         };
-        let rename_warning = self
-            .rename_root_tab(&response, session_name)
-            .err()
-            .map(|error| format!("could not rename its root tab: {error:#}"));
+        let rename_warning = match self.rename_root_tab(&response, session_name) {
+            Ok(tab_id) => {
+                workspace.tab_id = Some(tab_id);
+                None
+            }
+            Err(error) => Some(format!("could not rename its root tab: {error:#}")),
+        };
         let detach_warning = detach_created_worktree(
             &project.path,
             &workspace.worktree_path,
@@ -301,10 +313,11 @@ impl Herdr for CliHerdr {
             OsString::from(&project.name),
             OsString::from("--focus"),
         ])?;
-        self.rename_root_tab(&response, &session.name)?;
+        let tab_id = self.rename_root_tab(&response, &session.name)?;
         Ok(OpenedWorkspace {
             workspace_id: string_at(&response, "/result/workspace/workspace_id")?.to_owned(),
             pane_id: string_at(&response, "/result/root_pane/pane_id")?.to_owned(),
+            tab_id: Some(tab_id),
             worktree_path: project.path.clone(),
         })
     }
@@ -317,6 +330,75 @@ impl Herdr for CliHerdr {
     fn focus_agent(&self, pane_id: &str) -> Result<()> {
         self.run_json(["agent", "focus", pane_id])?;
         Ok(())
+    }
+
+    fn find_reusable_session_pane(
+        &self,
+        workspace_id: &str,
+        session_name: &str,
+        cwd: &Path,
+        owned_tab_id: Option<&str>,
+    ) -> Result<Option<CreatedAgentPane>> {
+        let tab_response = self.run_json(["tab", "list", "--workspace", workspace_id])?;
+        let pane_response = self.run_json(["pane", "list", "--workspace", workspace_id])?;
+        let panes = array_at(&pane_response, "/result/panes")?;
+        let mut best = None;
+
+        for tab in array_at(&tab_response, "/result/tabs")? {
+            let tab_id = string_at(tab, "/tab_id")?;
+            if tab.get("label").and_then(Value::as_str) != Some(session_name)
+                || owned_tab_id.is_some_and(|owned| owned != tab_id)
+            {
+                continue;
+            }
+            let tab_panes = panes
+                .iter()
+                .filter(|pane| pane.get("tab_id").and_then(Value::as_str) == Some(tab_id))
+                .collect::<Vec<_>>();
+            let [pane] = tab_panes.as_slice() else {
+                continue;
+            };
+            if pane.get("agent").and_then(Value::as_str).is_some()
+                || !pane
+                    .get("cwd")
+                    .and_then(Value::as_str)
+                    .is_some_and(|path| same_path(Path::new(path), cwd))
+            {
+                continue;
+            }
+            let pane_id = string_at(pane, "/pane_id")?;
+            let Ok(process_response) = self.run_json(["pane", "process-info", "--pane", pane_id])
+            else {
+                continue;
+            };
+            let foreground_group = process_response
+                .pointer("/result/process_info/foreground_process_group_id")
+                .and_then(Value::as_i64);
+            let shell_pid = process_response
+                .pointer("/result/process_info/shell_pid")
+                .and_then(Value::as_i64);
+            if foreground_group.is_none() || foreground_group != shell_pid {
+                continue;
+            }
+            let candidate = (
+                tab.get("focused").and_then(Value::as_bool).unwrap_or(false),
+                tab.get("number").and_then(Value::as_i64).unwrap_or(0),
+                CreatedAgentPane {
+                    tab_id: tab_id.to_owned(),
+                    pane_id: pane_id.to_owned(),
+                },
+            );
+            if best
+                .as_ref()
+                .is_none_or(|current: &(bool, i64, CreatedAgentPane)| {
+                    (candidate.0, candidate.1) > (current.0, current.1)
+                })
+            {
+                best = Some(candidate);
+            }
+        }
+
+        Ok(best.map(|(_, _, pane)| pane))
     }
 
     fn create_agent_pane(
@@ -372,12 +454,12 @@ impl CliHerdr {
         response: &Value,
         label: &str,
     ) -> Result<OpenedWorkspace> {
-        let workspace = opened_workspace(response)?;
-        self.rename_root_tab(response, label)?;
+        let mut workspace = opened_workspace(response)?;
+        workspace.tab_id = Some(self.rename_root_tab(response, label)?);
         Ok(workspace)
     }
 
-    fn rename_root_tab(&self, response: &Value, label: &str) -> Result<()> {
+    fn rename_root_tab(&self, response: &Value, label: &str) -> Result<String> {
         let direct_tab_id = response
             .pointer("/result/tab/tab_id")
             .or_else(|| response.pointer("/result/root_pane/tab_id"))
@@ -396,7 +478,7 @@ impl CliHerdr {
             OsString::from(tab_id),
             OsString::from(label),
         ])?;
-        Ok(())
+        Ok(tab_id.to_owned())
     }
 }
 
@@ -404,6 +486,11 @@ fn opened_workspace(response: &Value) -> Result<OpenedWorkspace> {
     Ok(OpenedWorkspace {
         workspace_id: string_at(response, "/result/workspace/workspace_id")?.to_owned(),
         pane_id: string_at(response, "/result/root_pane/pane_id")?.to_owned(),
+        tab_id: response
+            .pointer("/result/tab/tab_id")
+            .or_else(|| response.pointer("/result/root_pane/tab_id"))
+            .and_then(Value::as_str)
+            .map(str::to_owned),
         worktree_path: PathBuf::from(string_at(response, "/result/worktree/path")?),
     })
 }

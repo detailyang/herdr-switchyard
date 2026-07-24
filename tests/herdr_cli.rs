@@ -27,7 +27,14 @@ case "$1 $2" in
     printf '%s\n' '{{"result":{{"type":"workspace_list","workspaces":[{{"workspace_id":"w1","label":"feat-one","worktree":{{"checkout_path":"/worktrees/demo/feat-one"}}}},{{"workspace_id":"w4","label":"remote-lap"}}]}}}}'
     ;;
   "pane list")
-    printf '%s\n' '{{"result":{{"type":"pane_list","panes":[{{"pane_id":"w1:p1","workspace_id":"w1","tab_id":"w1:t1","cwd":"/worktrees/demo/feat-one"}},{{"pane_id":"w4:p1","workspace_id":"w4","tab_id":"w4:t1","cwd":"/repos/demo"}}]}}}}'
+    printf '%s\n' '{{"result":{{"type":"pane_list","panes":[{{"pane_id":"w1:p1","workspace_id":"w1","tab_id":"w1:t1","cwd":"/worktrees/demo/feat-one","agent":"codex"}},{{"pane_id":"w1:p3","workspace_id":"w1","tab_id":"w1:t3","cwd":"/worktrees/demo/feat-one"}},{{"pane_id":"w1:p4","workspace_id":"w1","tab_id":"w1:t4","cwd":"/worktrees/demo/feat-one"}},{{"pane_id":"w4:p1","workspace_id":"w4","tab_id":"w4:t1","cwd":"/repos/demo"}}]}}}}'
+    ;;
+  "tab list")
+    printf '%s\n' '{{"result":{{"type":"tab_list","tabs":[{{"tab_id":"w1:t1","workspace_id":"w1","label":"feat/one","number":1,"focused":false}},{{"tab_id":"w1:t3","workspace_id":"w1","label":"feat/one","number":3,"focused":false}},{{"tab_id":"w1:t4","workspace_id":"w1","label":"feat/one","number":4,"focused":true}}]}}}}'
+    ;;
+  "pane process-info")
+    if [ "$4" = 'w1:p4' ]; then foreground=999; else foreground=123; fi
+    printf '%s\n' "{{\"result\":{{\"type\":\"pane_process_info\",\"process_info\":{{\"pane_id\":\"$4\",\"shell_pid\":123,\"foreground_process_group_id\":$foreground}}}}}}"
     ;;
   "agent list")
     printf '%s\n' '{{"result":{{"type":"agent_list","agents":[{{"workspace_id":"w1","pane_id":"w1:p2","name":"{managed_name}","agent":"codex","agent_status":"working","agent_session":{{"agent":"codex","kind":"id","value":"session-123"}}}}]}}}}'
@@ -480,6 +487,8 @@ fn opens_a_registered_worktree_by_its_persisted_path() {
         created_at_ms: 1,
         last_used_at_ms: 1,
         agent_session: None,
+        tab_id: None,
+        tab_namespace: None,
     };
 
     let opened = herdr.open_worktree(&project(), "w-root", &session).unwrap();
@@ -504,6 +513,8 @@ fn opens_a_local_session_in_the_configured_project_directory() {
         created_at_ms: 1,
         last_used_at_ms: 1,
         agent_session: None,
+        tab_id: None,
+        tab_namespace: None,
     };
 
     let opened = herdr.open_local(&project(), &session).unwrap();
@@ -535,6 +546,43 @@ fn creates_a_dedicated_agent_tab_in_an_open_workspace() {
     assert!(calls.contains(
         "tab create --workspace w1 --cwd /worktrees/demo/feat-one --label feat/one --focus"
     ));
+}
+
+#[test]
+fn skips_a_busy_focused_tab_and_reuses_an_available_shell() {
+    let (_root, herdr, log) = fake_herdr();
+
+    let pane = herdr
+        .find_reusable_session_pane(
+            "w1",
+            "feat/one",
+            std::path::Path::new("/worktrees/demo/feat-one"),
+            None,
+        )
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(pane.tab_id, "w1:t3");
+    assert_eq!(pane.pane_id, "w1:p3");
+    let calls = fs::read_to_string(log).unwrap();
+    assert!(calls.contains("tab list --workspace w1"));
+    assert!(calls.contains("pane list --workspace w1"));
+}
+
+#[test]
+fn does_not_substitute_an_unowned_tab_for_a_recorded_tab() {
+    let (_root, herdr, _log) = fake_herdr();
+
+    let pane = herdr
+        .find_reusable_session_pane(
+            "w1",
+            "feat/one",
+            std::path::Path::new("/worktrees/demo/feat-one"),
+            Some("w1:t1"),
+        )
+        .unwrap();
+
+    assert_eq!(pane, None);
 }
 
 #[test]
