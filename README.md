@@ -58,7 +58,9 @@ with a missing base branch are repaired automatically; valid explicit overrides
 remain unchanged.
 
 Use the arrow keys or mouse wheel to move, `Enter` or a double-click to open a
-directory, and `Backspace` to move to its parent. `Esc` closes the picker.
+directory, and `Backspace` to move to its parent. Hidden directories are omitted
+by default; click **Show hidden** or press `.` to toggle them. `Esc` closes the
+picker.
 
 Open a project and choose **New session** or press `n`. The title identifies the
 session; it is not a Git branch name. Choose **Worktree** (the default) for an

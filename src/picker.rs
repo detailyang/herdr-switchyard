@@ -61,6 +61,7 @@ struct AddProjectLayout {
     popup: Rect,
     path: Rect,
     defaults: Rect,
+    hidden_toggle: Rect,
     directory_rows: Rect,
     add_current: Rect,
 }
@@ -197,6 +198,8 @@ impl AddProjectLayout {
             Constraint::Min(1),
         ])
         .split(inner);
+        let defaults =
+            Layout::horizontal([Constraint::Min(1), Constraint::Length(16)]).split(chunks[1]);
         let directory_rows = chunks[2];
         let add_current = Rect::new(
             directory_rows.x,
@@ -207,7 +210,8 @@ impl AddProjectLayout {
         Self {
             popup,
             path: chunks[0],
-            defaults: chunks[1],
+            defaults: defaults[0],
+            hidden_toggle: defaults[1],
             directory_rows,
             add_current,
         }
@@ -335,6 +339,7 @@ enum FocusedPane {
 struct ProjectDraft {
     current_dir: PathBuf,
     directories: Vec<PathBuf>,
+    show_hidden: bool,
     selected: usize,
 }
 
@@ -345,7 +350,7 @@ enum DirectoryChoice {
 }
 
 impl ProjectDraft {
-    fn open(path: PathBuf) -> Result<Self> {
+    fn open_with_hidden(path: PathBuf, show_hidden: bool) -> Result<Self> {
         let current_dir = fs::canonicalize(&path)
             .with_context(|| format!("open directory {}", path.display()))?;
         let mut directories = fs::read_dir(&current_dir)
@@ -362,12 +367,24 @@ impl ProjectDraft {
         Ok(Self {
             current_dir,
             directories,
+            show_hidden,
             selected: 0,
         })
     }
 
     fn row_count(&self) -> usize {
-        1 + usize::from(self.current_dir.parent().is_some()) + self.directories.len()
+        1 + usize::from(self.current_dir.parent().is_some()) + self.visible_directories().count()
+    }
+
+    fn visible_directories(&self) -> impl Iterator<Item = &PathBuf> {
+        self.directories.iter().filter(|path| {
+            self.show_hidden
+                || !path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .starts_with('.')
+        })
     }
 
     fn choice(&self, position: usize) -> Option<DirectoryChoice> {
@@ -381,8 +398,8 @@ impl ProjectDraft {
             }
             position -= 1;
         }
-        self.directories
-            .get(position)
+        self.visible_directories()
+            .nth(position)
             .cloned()
             .map(DirectoryChoice::Navigate)
     }
@@ -745,6 +762,14 @@ impl Picker {
         };
         let layout = AddProjectLayout::new(area);
         match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) if contains(layout.hidden_toggle, mouse) => {
+                draft.show_hidden = !draft.show_hidden;
+                draft.selected = 0;
+                self.directory_offset = 0;
+                self.last_click = None;
+                self.view = View::AddProject(draft);
+                Intent::None
+            }
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
                 if contains(layout.directory_rows, mouse) =>
             {
@@ -1258,8 +1283,15 @@ impl Picker {
             }
             KeyCode::Backspace => {
                 if let Some(parent) = draft.current_dir.parent().map(PathBuf::from) {
-                    self.open_add_project_at(parent);
+                    self.open_add_project_at_with_hidden(parent, draft.show_hidden);
                 }
+                Intent::None
+            }
+            KeyCode::Char('.') => {
+                draft.show_hidden = !draft.show_hidden;
+                draft.selected = 0;
+                self.directory_offset = 0;
+                self.view = View::AddProject(draft);
                 Intent::None
             }
             KeyCode::Enter => self.activate_directory_choice(draft.clone(), draft.selected),
@@ -1275,7 +1307,11 @@ impl Picker {
     }
 
     fn open_add_project_at(&mut self, path: PathBuf) {
-        match ProjectDraft::open(path) {
+        self.open_add_project_at_with_hidden(path, false);
+    }
+
+    fn open_add_project_at_with_hidden(&mut self, path: PathBuf, show_hidden: bool) {
+        match ProjectDraft::open_with_hidden(path, show_hidden) {
             Ok(draft) => {
                 self.directory_offset = 0;
                 self.last_click = None;
@@ -1289,7 +1325,7 @@ impl Picker {
         match draft.choice(position) {
             Some(DirectoryChoice::Current) => self.project_from_directory(&draft.current_dir),
             Some(DirectoryChoice::Navigate(path)) => {
-                self.open_add_project_at(path);
+                self.open_add_project_at_with_hidden(path, draft.show_hidden);
                 Intent::None
             }
             None => Intent::None,
@@ -2122,6 +2158,29 @@ impl Picker {
             ),
             layout.defaults,
         );
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(
+                    if draft.show_hidden { "● " } else { "○ " },
+                    Style::default().fg(theme.accent),
+                ),
+                Span::styled(
+                    if draft.show_hidden {
+                        "Hide hidden"
+                    } else {
+                        "Show hidden"
+                    },
+                    Style::default().fg(theme.secondary_text),
+                ),
+            ]))
+            .alignment(Alignment::Right)
+            .block(
+                Block::new()
+                    .borders(Borders::BOTTOM)
+                    .border_style(Style::default().fg(theme.divider)),
+            ),
+            layout.hidden_toggle,
+        );
 
         let mut rows = vec![
             Row::new(vec![Cell::from(Line::from(vec![
@@ -2144,7 +2203,7 @@ impl Picker {
                 .height(DIRECTORY_ROW_HEIGHT),
             );
         }
-        rows.extend(draft.directories.iter().map(|path| {
+        rows.extend(draft.visible_directories().map(|path| {
             Row::new(vec![Cell::from(Line::from(vec![
                 Span::styled("▸  ", Style::default().fg(theme.muted_text)),
                 Span::styled(
@@ -3116,6 +3175,86 @@ mod tests {
         assert!(!rendered.contains("Agent"));
         assert!(!rendered.contains("Base"));
         assert!(!rendered.contains("not-a-directory.txt"));
+    }
+
+    #[test]
+    fn add_project_hides_dot_directories_until_the_toggle_is_clicked() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir(root.path().join("visible")).unwrap();
+        fs::create_dir(root.path().join(".hidden-project")).unwrap();
+        let mut picker = picker();
+        picker.open_add_project_at(root.path().to_path_buf());
+        let area = Rect::new(0, 0, 120, 36);
+        let layout = AddProjectLayout::new(area);
+        let backend = TestBackend::new(area.width, area.height);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal.draw(|frame| picker.draw(frame)).unwrap();
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("visible"));
+        assert!(rendered.contains("Show hidden"));
+        assert!(!rendered.contains(".hidden-project"));
+
+        assert_eq!(
+            picker.handle_mouse_at(
+                left_click(layout.hidden_toggle),
+                area,
+                std::time::Instant::now(),
+            ),
+            Intent::None
+        );
+        terminal.draw(|frame| picker.draw(frame)).unwrap();
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("Hide hidden"));
+        assert!(rendered.contains(".hidden-project"));
+    }
+
+    #[test]
+    fn hidden_directory_visibility_survives_navigation_but_resets_for_a_new_dialog() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir(root.path().join(".hidden-project")).unwrap();
+        fs::create_dir(root.path().join("visible")).unwrap();
+        let root_path = fs::canonicalize(root.path()).unwrap();
+        let visible_path = fs::canonicalize(root.path().join("visible")).unwrap();
+        let mut picker = picker();
+        picker.open_add_project_at(root.path().to_path_buf());
+
+        assert_eq!(picker.handle_key(key(KeyCode::Char('.'))), Intent::None);
+        for _ in 0..3 {
+            picker.handle_key(key(KeyCode::Down));
+        }
+        assert_eq!(picker.handle_key(key(KeyCode::Enter)), Intent::None);
+        assert!(matches!(
+            &picker.view,
+            View::AddProject(draft)
+                if draft.current_dir == visible_path && draft.show_hidden
+        ));
+
+        assert_eq!(picker.handle_key(key(KeyCode::Backspace)), Intent::None);
+        assert!(matches!(
+            &picker.view,
+            View::AddProject(draft)
+                if draft.current_dir == root_path && draft.show_hidden
+        ));
+
+        picker.handle_key(key(KeyCode::Esc));
+        picker.open_add_project_at(root.path().to_path_buf());
+        assert!(matches!(
+            &picker.view,
+            View::AddProject(draft) if !draft.show_hidden
+        ));
     }
 
     #[test]
