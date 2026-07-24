@@ -67,7 +67,13 @@ to keep, matching Codex's worktree model.
 The picker supports both keyboard and mouse input. Click a project or session to
 select it, double-click a session to open it, use the mouse wheel to move through
 either list, and click **Add project**, **New session**, or **Focus agent** to run
-that action.
+that action. Press `Delete` or `Backspace` on a selected project or session, or
+right-click its row, to open a deletion confirmation. Removing a project only
+unregisters it from Switchyard and requires its sessions to be removed first;
+the project directory is never deleted. Removing a session deletes its worktree
+and registry entry. Dirty worktrees and detached commits that are not reachable
+from a Git ref are refused rather than discarded; create a branch or tag first.
+An open session must have its Herdr workspace closed before it can be removed.
 
 Worktree placement inherits Herdr's `worktrees.directory` setting. Switchyard does
 not keep a second worktree-root setting that could disagree with Herdr.

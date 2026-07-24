@@ -8,6 +8,7 @@ use crate::{
         State, is_supported_agent,
     },
     paths::same_path,
+    repository::remove_worktree,
 };
 
 pub trait Herdr {
@@ -176,6 +177,39 @@ pub fn create_session<H: Herdr>(
         &created.workspace.pane_id,
     )?;
     Ok(Activation::Created)
+}
+
+pub fn delete_session<H: Herdr>(
+    herdr: &H,
+    project: &Project,
+    state: &mut State,
+    session_name: &str,
+) -> Result<()> {
+    let session_index = state
+        .sessions
+        .iter()
+        .position(|session| session.project_id == project.id && session.name == session_name)
+        .with_context(|| {
+            format!(
+                "session {session_name:?} is not registered for {}",
+                project.name
+            )
+        })?;
+    let session = state.sessions[session_index].clone();
+    let snapshot = herdr.snapshot().context("read Herdr state")?;
+    if snapshot
+        .workspaces
+        .iter()
+        .any(|workspace| same_path(&workspace.checkout_path, &session.worktree_path))
+    {
+        bail!(
+            "Session {session_name:?} is still open. Close its Herdr workspace first, then delete it."
+        );
+    }
+    remove_worktree(&project.path, &session.worktree_path)
+        .with_context(|| format!("delete worktree for session {session_name:?}"))?;
+    state.sessions.remove(session_index);
+    Ok(())
 }
 
 pub fn sync_agent_sessions(

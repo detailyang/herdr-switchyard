@@ -28,7 +28,9 @@ use ratatui::{
 };
 
 use crate::{
-    coordinator::{Herdr, activate_existing, agent_name, create_session, sync_agent_sessions},
+    coordinator::{
+        Herdr, activate_existing, agent_name, create_session, delete_session, sync_agent_sessions,
+    },
     herdr::CliHerdr,
     model::{Config, DEFAULT_BASE_BRANCH, Project, RuntimeSnapshot, Session, State},
     paths::same_path,
@@ -69,6 +71,42 @@ struct NewSessionLayout {
     body: Rect,
     create: Rect,
     cancel: Rect,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DeleteConfirmationLayout {
+    popup: Rect,
+    body: Rect,
+    delete: Rect,
+    cancel: Rect,
+}
+
+impl DeleteConfirmationLayout {
+    fn new(area: Rect) -> Self {
+        let width = area.width.saturating_sub(4).clamp(1, 64);
+        let height = area.height.saturating_sub(4).clamp(1, 11);
+        let popup = Rect::new(
+            area.x + area.width.saturating_sub(width) / 2,
+            area.y + area.height.saturating_sub(height) / 2,
+            width,
+            height,
+        );
+        let inner = Block::bordered().inner(popup);
+        let rows = Layout::vertical([Constraint::Min(1), Constraint::Length(3)]).split(inner);
+        let actions = Layout::horizontal([
+            Constraint::Length(14),
+            Constraint::Length(1),
+            Constraint::Length(14),
+            Constraint::Min(0),
+        ])
+        .split(rows[1]);
+        Self {
+            popup,
+            body: rows[0],
+            delete: actions[0],
+            cancel: actions[2],
+        }
+    }
 }
 
 impl NewSessionLayout {
@@ -212,6 +250,25 @@ pub enum Intent {
         session_name: String,
     },
     AddProject(Project),
+    DeleteProject {
+        project_id: String,
+    },
+    DeleteSession {
+        project_id: String,
+        session_name: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DeleteTarget {
+    Project {
+        project_id: String,
+        project_name: String,
+    },
+    Session {
+        project_id: String,
+        session_name: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -219,6 +276,7 @@ enum View {
     Browser,
     AddProject(ProjectDraft),
     NewSession { project_id: String, input: String },
+    ConfirmDelete(DeleteTarget),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -380,6 +438,7 @@ impl Picker {
                 self.handle_new_session(key.code, project_id, input)
             }
             View::AddProject(draft) => self.handle_add_project(key.code, draft),
+            View::ConfirmDelete(target) => self.handle_delete_confirmation(key.code, target),
         }
     }
 
@@ -398,6 +457,9 @@ impl Picker {
         if let View::NewSession { project_id, input } = self.view.clone() {
             return self.handle_new_session_mouse(mouse, area, project_id, input);
         }
+        if let View::ConfirmDelete(target) = self.view.clone() {
+            return self.handle_delete_confirmation_mouse(mouse, area, target);
+        }
 
         let layout = UiLayout::new(area);
         match mouse.kind {
@@ -410,7 +472,52 @@ impl Picker {
                 Intent::None
             }
             MouseEventKind::Down(MouseButton::Left) => self.handle_left_click(mouse, layout, now),
+            MouseEventKind::Down(MouseButton::Right) => self.handle_right_click(mouse, layout),
             _ => Intent::None,
+        }
+    }
+
+    fn handle_delete_confirmation(&mut self, key: KeyCode, target: DeleteTarget) -> Intent {
+        match key {
+            KeyCode::Esc | KeyCode::Char('n') => {
+                self.view = View::Browser;
+                Intent::None
+            }
+            KeyCode::Enter | KeyCode::Char('y') => Self::delete_intent(target),
+            _ => Intent::None,
+        }
+    }
+
+    fn handle_delete_confirmation_mouse(
+        &mut self,
+        mouse: MouseEvent,
+        area: Rect,
+        target: DeleteTarget,
+    ) -> Intent {
+        if mouse.kind != MouseEventKind::Down(MouseButton::Left) {
+            return Intent::None;
+        }
+        let layout = DeleteConfirmationLayout::new(area);
+        if contains(layout.cancel, mouse) {
+            self.view = View::Browser;
+            return Intent::None;
+        }
+        if contains(layout.delete, mouse) {
+            return Self::delete_intent(target);
+        }
+        Intent::None
+    }
+
+    fn delete_intent(target: DeleteTarget) -> Intent {
+        match target {
+            DeleteTarget::Project { project_id, .. } => Intent::DeleteProject { project_id },
+            DeleteTarget::Session {
+                project_id,
+                session_name,
+            } => Intent::DeleteSession {
+                project_id,
+                session_name,
+            },
         }
     }
 
@@ -610,6 +717,52 @@ impl Picker {
         Intent::None
     }
 
+    fn handle_right_click(&mut self, mouse: MouseEvent, layout: UiLayout) -> Intent {
+        self.searching = false;
+        self.last_click = None;
+        if contains(layout.project_rows, mouse) {
+            let Some(position) = table_row_at(layout.project_rows, mouse, self.project_offset)
+            else {
+                return Intent::None;
+            };
+            let projects = self.filtered_project_indices();
+            let Some(index) = projects.get(position).copied() else {
+                return Intent::None;
+            };
+            let project = self.config.projects[index].clone();
+            let project_changed = self.active_project_id().as_deref() != Some(&project.id);
+            self.focused_pane = FocusedPane::Projects;
+            self.project_selected = position + 1;
+            if project_changed {
+                self.reset_session_cursor();
+            }
+            self.confirm_project_delete(project);
+            return Intent::None;
+        }
+
+        let Some(project_id) = self.active_project_id() else {
+            return Intent::None;
+        };
+        if contains(layout.session_rows, mouse) {
+            let Some(position) = table_row_at(layout.session_rows, mouse, self.session_offset)
+            else {
+                return Intent::None;
+            };
+            let sessions = self.filtered_session_indices(&project_id);
+            let Some(index) = sessions.get(position).copied() else {
+                return Intent::None;
+            };
+            let session_name = self.state.sessions[index].name.clone();
+            self.focused_pane = FocusedPane::Sessions;
+            self.session_selected = position + 1;
+            self.view = View::ConfirmDelete(DeleteTarget::Session {
+                project_id,
+                session_name,
+            });
+        }
+        Intent::None
+    }
+
     fn register_click(&mut self, target: ClickTarget, now: Instant) -> bool {
         let double_click = self.last_click.as_ref().is_some_and(|(previous, at)| {
             previous == &target
@@ -637,6 +790,10 @@ impl Picker {
     fn active_project_id(&self) -> Option<String> {
         match &self.view {
             View::NewSession { project_id, .. } => Some(project_id.clone()),
+            View::ConfirmDelete(DeleteTarget::Project { project_id, .. })
+            | View::ConfirmDelete(DeleteTarget::Session { project_id, .. }) => {
+                Some(project_id.clone())
+            }
             View::Browser | View::AddProject(_) => self
                 .project_selected
                 .checked_sub(1)
@@ -657,18 +814,47 @@ impl Picker {
         match (&self.view, self.focused_pane) {
             (View::Browser, FocusedPane::Sessions) => self.session_selected.checked_sub(1),
             (View::Browser, FocusedPane::Projects) => Some(0),
-            (View::AddProject(_) | View::NewSession { .. }, _) => None,
+            (View::AddProject(_) | View::NewSession { .. } | View::ConfirmDelete(_), _) => None,
         }
         .filter(|_| has_sessions)
     }
 
-    pub fn project_added(&mut self, project: Project) {
-        self.config.projects.push(project);
+    fn project_added(&mut self, config: Config, project_id: &str) {
+        self.config = config;
         self.view = View::Browser;
         self.focused_pane = FocusedPane::Projects;
         self.project_filter.clear();
-        self.project_selected = self.config.projects.len();
+        self.project_selected = self
+            .config
+            .projects
+            .iter()
+            .position(|project| project.id == project_id)
+            .map(|position| position + 1)
+            .unwrap_or(0);
         self.reset_session_cursor();
+    }
+
+    fn project_deleted(&mut self, project_id: &str) {
+        self.config
+            .projects
+            .retain(|project| project.id != project_id);
+        self.view = View::Browser;
+        self.focused_pane = FocusedPane::Projects;
+        self.project_selected = self
+            .project_selected
+            .min(self.filtered_project_indices().len());
+        self.reset_session_cursor();
+    }
+
+    fn session_deleted(&mut self) {
+        self.view = View::Browser;
+        self.focused_pane = FocusedPane::Sessions;
+        let session_count = self
+            .active_project_id()
+            .map(|project_id| self.filtered_session_indices(&project_id).len())
+            .unwrap_or(0);
+        self.session_selected = self.session_selected.min(session_count);
+        self.session_offset = self.session_offset.min(self.session_selected);
     }
 
     fn handle_projects(&mut self, key: KeyCode) -> Intent {
@@ -688,6 +874,10 @@ impl Picker {
             }
             KeyCode::Down | KeyCode::Char('j') => {
                 self.select_next();
+                Intent::None
+            }
+            KeyCode::Delete | KeyCode::Backspace => {
+                self.confirm_selected_project_delete();
                 Intent::None
             }
             KeyCode::Enter if self.project_selected == 0 => {
@@ -731,6 +921,10 @@ impl Picker {
             }
             KeyCode::Down | KeyCode::Char('j') => {
                 self.select_next();
+                Intent::None
+            }
+            KeyCode::Delete | KeyCode::Backspace => {
+                self.confirm_selected_session_delete(&project_id);
                 Intent::None
             }
             KeyCode::Enter if self.session_selected == 0 => {
@@ -882,6 +1076,48 @@ impl Picker {
         };
     }
 
+    fn confirm_selected_project_delete(&mut self) {
+        let Some(position) = self.project_selected.checked_sub(1) else {
+            return;
+        };
+        let projects = self.filtered_project_indices();
+        let Some(index) = projects.get(position).copied() else {
+            return;
+        };
+        let project = self.config.projects[index].clone();
+        self.confirm_project_delete(project);
+    }
+
+    fn confirm_project_delete(&mut self, project: Project) {
+        if self
+            .state
+            .sessions
+            .iter()
+            .any(|session| session.project_id == project.id)
+        {
+            self.error = Some("Delete its sessions first, then delete the project.".into());
+            return;
+        }
+        self.view = View::ConfirmDelete(DeleteTarget::Project {
+            project_id: project.id,
+            project_name: project.name,
+        });
+    }
+
+    fn confirm_selected_session_delete(&mut self, project_id: &str) {
+        let Some(position) = self.session_selected.checked_sub(1) else {
+            return;
+        };
+        let sessions = self.filtered_session_indices(project_id);
+        let Some(index) = sessions.get(position).copied() else {
+            return;
+        };
+        self.view = View::ConfirmDelete(DeleteTarget::Session {
+            project_id: project_id.to_owned(),
+            session_name: self.state.sessions[index].name.clone(),
+        });
+    }
+
     fn select_previous(&mut self) {
         let count = self.row_count();
         match self.focused_pane {
@@ -931,7 +1167,7 @@ impl Picker {
                 .active_project_id()
                 .map(|project_id| self.filtered_session_indices(&project_id).len() + 1)
                 .unwrap_or(0),
-            (View::AddProject(_) | View::NewSession { .. }, _) => 1,
+            (View::AddProject(_) | View::NewSession { .. } | View::ConfirmDelete(_), _) => 1,
         }
     }
 
@@ -987,6 +1223,10 @@ impl Picker {
             View::AddProject(draft) => {
                 self.draw_browser(frame);
                 self.draw_add_project(frame, frame.area(), &draft);
+            }
+            View::ConfirmDelete(target) => {
+                self.draw_browser(frame);
+                self.draw_delete_confirmation(frame, frame.area(), &target);
             }
         }
         if let Some(error) = &self.error {
@@ -1389,6 +1629,78 @@ impl Picker {
         );
     }
 
+    fn draw_delete_confirmation(&self, frame: &mut Frame, area: Rect, target: &DeleteTarget) {
+        let theme = self.theme;
+        let layout = DeleteConfirmationLayout::new(area);
+        let (title, lines) = match target {
+            DeleteTarget::Project { project_name, .. } => (
+                " Delete project ",
+                vec![
+                    Line::from(Span::styled(
+                        project_name.clone(),
+                        Style::default()
+                            .fg(theme.primary_text)
+                            .add_modifier(Modifier::BOLD),
+                    )),
+                    Line::from(""),
+                    Line::from("Removes it from Switchyard only."),
+                    Line::from("Project files stay untouched."),
+                ],
+            ),
+            DeleteTarget::Session { session_name, .. } => (
+                " Delete session ",
+                vec![
+                    Line::from(Span::styled(
+                        session_name.clone(),
+                        Style::default()
+                            .fg(theme.primary_text)
+                            .add_modifier(Modifier::BOLD),
+                    )),
+                    Line::from(""),
+                    Line::from("Deletes its Git worktree and session record."),
+                    Line::from("Dirty files or unbranched commits prevent deletion."),
+                    Line::from("Open sessions must be closed first."),
+                ],
+            ),
+        };
+        frame.render_widget(Clear, layout.popup);
+        frame.render_widget(
+            Block::bordered()
+                .border_type(BorderType::Rounded)
+                .title(Span::styled(
+                    title,
+                    Style::default()
+                        .fg(theme.danger)
+                        .add_modifier(Modifier::BOLD),
+                ))
+                .border_style(Style::default().fg(theme.danger))
+                .style(Style::default().bg(theme.panel).fg(theme.primary_text)),
+            layout.popup,
+        );
+        frame.render_widget(Paragraph::new(lines), layout.body);
+        let delete_style = Style::default()
+            .fg(theme.danger)
+            .add_modifier(Modifier::BOLD);
+        frame.render_widget(
+            Paragraph::new(" Delete ").style(delete_style).block(
+                Block::bordered()
+                    .border_type(BorderType::Rounded)
+                    .border_style(delete_style),
+            ),
+            layout.delete,
+        );
+        frame.render_widget(
+            Paragraph::new(" Cancel ")
+                .style(Style::default().fg(theme.secondary_text))
+                .block(
+                    Block::bordered()
+                        .border_type(BorderType::Rounded)
+                        .border_style(Style::default().fg(theme.border)),
+                ),
+            layout.cancel,
+        );
+    }
+
     fn draw_add_project(&mut self, frame: &mut Frame, area: Rect, draft: &ProjectDraft) {
         let theme = self.theme;
         let layout = AddProjectLayout::new(area);
@@ -1641,11 +1953,10 @@ fn repair_config_base_branches(config: &mut Config) -> (bool, Option<String>) {
 }
 
 pub fn run(store: &Store, herdr: &CliHerdr) -> Result<()> {
-    let mut config = store.load_config()?;
-    let (repaired, repair_warning) = repair_config_base_branches(&mut config);
-    if repaired {
-        store.save_config(&config)?;
-    }
+    let (config, repair_warning) = store.update_config(|config, _state| {
+        let (_, warning) = repair_config_base_branches(config);
+        Ok(warning)
+    })?;
     let snapshot = store.update_state(|state| {
         let snapshot = herdr.snapshot()?;
         sync_agent_sessions(state, &snapshot, &config.projects);
@@ -1768,24 +2079,20 @@ fn run_loop(
         match intent {
             Intent::None => {}
             Intent::Quit => return Ok(()),
-            Intent::AddProject(project) => match normalize_project(project, &picker.config) {
-                Ok(project) => {
-                    let mut config = picker.config.clone();
-                    config.projects.push(project.clone());
-                    match store.save_config(&config) {
-                        Ok(()) => picker.project_added(project),
-                        Err(error) => picker.error = Some(format!("{error:#}")),
-                    }
-                }
+            Intent::AddProject(project) => match store.update_config(|config, _state| {
+                let project = normalize_project(project, config)?;
+                config.projects.push(project.clone());
+                Ok(project)
+            }) {
+                Ok((config, project)) => picker.project_added(config, &project.id),
                 Err(error) => picker.error = Some(format!("{error:#}")),
             },
             Intent::ActivateSession {
                 project_id,
                 session_name,
             } => {
-                let project = project_by_id(&picker.config, &project_id)?.clone();
-                let result = store.update_state(|state| {
-                    activate_existing(herdr, &project, state, &session_name, now_ms())
+                let result = store.update_project_state(&project_id, |project, state| {
+                    activate_existing(herdr, project, state, &session_name, now_ms())
                 });
                 match result {
                     Ok(_) => return Ok(()),
@@ -1799,9 +2106,8 @@ fn run_loop(
                 project_id,
                 session_name,
             } => {
-                let project = project_by_id(&picker.config, &project_id)?.clone();
-                let result = store.update_state(|state| {
-                    create_session(herdr, &project, state, &session_name, now_ms())
+                let result = store.update_project_state(&project_id, |project, state| {
+                    create_session(herdr, project, state, &session_name, now_ms())
                 });
                 match result {
                     Ok(_) => return Ok(()),
@@ -1811,16 +2117,28 @@ fn run_loop(
                     }
                 }
             }
+            Intent::DeleteProject { project_id } => match store.remove_project(&project_id) {
+                Ok(config) => {
+                    picker.config = config;
+                    picker.project_deleted(&project_id);
+                }
+                Err(error) => picker.error = Some(format!("{error:#}")),
+            },
+            Intent::DeleteSession {
+                project_id,
+                session_name,
+            } => {
+                let result = store.update_project_state(&project_id, |project, state| {
+                    delete_session(herdr, project, state, &session_name)
+                });
+                picker.state = store.load_state()?;
+                match result {
+                    Ok(()) => picker.session_deleted(),
+                    Err(error) => picker.error = Some(format!("{error:#}")),
+                }
+            }
         }
     }
-}
-
-fn project_by_id<'a>(config: &'a Config, id: &str) -> Result<&'a Project> {
-    config
-        .projects
-        .iter()
-        .find(|project| project.id == id)
-        .with_context(|| format!("project {id:?} is no longer configured"))
 }
 
 fn now_ms() -> u64 {
@@ -1910,6 +2228,15 @@ mod tests {
         }
     }
 
+    fn right_click(rect: Rect) -> MouseEvent {
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Right),
+            column: rect.x + rect.width.saturating_sub(1) / 2,
+            row: rect.y + rect.height.saturating_sub(1) / 2,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
     fn initialize_git_repository(path: &Path, branch: &str) {
         fs::create_dir_all(path).unwrap();
         let initialized = Command::new("git")
@@ -1966,6 +2293,135 @@ mod tests {
                 session_name: "feat/one".into(),
             }
         );
+    }
+
+    #[test]
+    fn delete_key_confirms_the_selected_project_before_deleting() {
+        let mut picker = picker();
+
+        assert_eq!(picker.handle_key(key(KeyCode::Delete)), Intent::None);
+        assert!(matches!(
+            picker.view,
+            View::ConfirmDelete(DeleteTarget::Project { ref project_id, .. })
+                if project_id == "demo"
+        ));
+        assert_eq!(
+            picker.handle_key(key(KeyCode::Enter)),
+            Intent::DeleteProject {
+                project_id: "demo".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn a_project_with_sessions_must_delete_its_sessions_first() {
+        let mut picker = picker_with_session();
+
+        assert_eq!(picker.handle_key(key(KeyCode::Delete)), Intent::None);
+
+        assert_eq!(picker.view, View::Browser);
+        assert!(
+            picker
+                .error
+                .as_deref()
+                .unwrap()
+                .contains("Delete its sessions first")
+        );
+    }
+
+    #[test]
+    fn backspace_confirms_the_selected_session_and_escape_cancels() {
+        let mut picker = picker_with_session();
+        picker.handle_key(key(KeyCode::Enter));
+        picker.handle_key(key(KeyCode::Down));
+
+        assert_eq!(picker.handle_key(key(KeyCode::Backspace)), Intent::None);
+        assert!(matches!(
+            picker.view,
+            View::ConfirmDelete(DeleteTarget::Session { ref session_name, .. })
+                if session_name == "feat/one"
+        ));
+        assert_eq!(picker.handle_key(key(KeyCode::Esc)), Intent::None);
+        assert_eq!(picker.view, View::Browser);
+    }
+
+    #[test]
+    fn right_clicking_a_session_opens_its_delete_confirmation() {
+        let mut picker = picker_with_session();
+        picker.handle_key(key(KeyCode::Enter));
+        let area = Rect::new(0, 0, 120, 36);
+        let layout = UiLayout::new(area);
+        let first_session_row = Rect::new(
+            layout.session_rows.x,
+            layout.session_rows.y,
+            layout.session_rows.width,
+            ROW_HEIGHT,
+        );
+
+        assert_eq!(
+            picker.handle_mouse_at(
+                right_click(first_session_row),
+                area,
+                std::time::Instant::now(),
+            ),
+            Intent::None
+        );
+        assert!(matches!(
+            picker.view,
+            View::ConfirmDelete(DeleteTarget::Session { ref session_name, .. })
+                if session_name == "feat/one"
+        ));
+    }
+
+    #[test]
+    fn right_clicking_a_project_opens_its_delete_confirmation() {
+        let mut picker = picker();
+        let area = Rect::new(0, 0, 120, 36);
+        let layout = UiLayout::new(area);
+        let first_project_row = Rect::new(
+            layout.project_rows.x,
+            layout.project_rows.y,
+            layout.project_rows.width,
+            ROW_HEIGHT,
+        );
+
+        assert_eq!(
+            picker.handle_mouse_at(
+                right_click(first_project_row),
+                area,
+                std::time::Instant::now(),
+            ),
+            Intent::None
+        );
+        assert!(matches!(
+            picker.view,
+            View::ConfirmDelete(DeleteTarget::Project { ref project_id, .. })
+                if project_id == "demo"
+        ));
+    }
+
+    #[test]
+    fn delete_confirmation_draws_the_destructive_scope() {
+        let mut picker = picker_with_session();
+        picker.handle_key(key(KeyCode::Enter));
+        picker.handle_key(key(KeyCode::Down));
+        picker.handle_key(key(KeyCode::Delete));
+        let backend = TestBackend::new(120, 36);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal.draw(|frame| picker.draw(frame)).unwrap();
+
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("Delete session"));
+        assert!(rendered.contains("Deletes its Git worktree"));
+        assert!(rendered.contains("Dirty files or unbranched commits prevent deletion"));
+        assert!(rendered.contains("Open sessions must be closed first"));
     }
 
     #[test]

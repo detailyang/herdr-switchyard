@@ -111,6 +111,101 @@ pub(crate) fn worktree_path_for_branch(repository: &Path, branch: &str) -> Resul
     Ok(None)
 }
 
+pub(crate) fn remove_worktree(repository: &Path, worktree: &Path) -> Result<()> {
+    let exists = worktree
+        .try_exists()
+        .with_context(|| format!("inspect worktree at {}", worktree.display()))?;
+    let registered = registered_worktrees(repository)?;
+    let registered_worktree = registered
+        .iter()
+        .find(|registered| equivalent_worktree_path(registered, worktree));
+    let Some(registered_worktree) = registered_worktree else {
+        if exists {
+            bail!(
+                "Path {} is not a registered Git worktree",
+                worktree.display()
+            );
+        }
+        return Ok(());
+    };
+    if exists {
+        ensure_worktree_safe_to_remove(worktree)?;
+    }
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repository)
+        .args(["worktree", "remove"])
+        .arg(registered_worktree)
+        .output()
+        .with_context(|| format!("remove Git worktree at {}", worktree.display()))?;
+    if output.status.success() {
+        if !exists {
+            run_git(repository, ["worktree", "prune", "--expire", "now"])
+                .context("prune missing Git worktree metadata")?;
+        }
+        return Ok(());
+    }
+    let message = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+    bail!("Git refused to remove the worktree: {message}")
+}
+
+fn equivalent_worktree_path(left: &Path, right: &Path) -> bool {
+    if same_path(left, right) {
+        return true;
+    }
+    let canonicalize_parent =
+        |path: &Path| Some(path.parent()?.canonicalize().ok()?.join(path.file_name()?));
+    canonicalize_parent(left) == canonicalize_parent(right)
+}
+
+pub(crate) fn ensure_worktree_safe_to_remove(worktree: &Path) -> Result<()> {
+    if worktree
+        .try_exists()
+        .with_context(|| format!("inspect worktree at {}", worktree.display()))?
+    {
+        ensure_head_is_referenced(worktree)?;
+    }
+    Ok(())
+}
+
+fn registered_worktrees(repository: &Path) -> Result<Vec<PathBuf>> {
+    let output = git_stdout(repository, ["worktree", "list", "--porcelain"])?;
+    Ok(output
+        .lines()
+        .filter_map(|line| line.strip_prefix("worktree ").map(PathBuf::from))
+        .collect())
+}
+
+fn ensure_head_is_referenced(worktree: &Path) -> Result<()> {
+    let symbolic_head = Command::new("git")
+        .arg("-C")
+        .arg(worktree)
+        .args(["symbolic-ref", "--quiet", "HEAD"])
+        .output()
+        .with_context(|| format!("inspect Git HEAD at {}", worktree.display()))?;
+    if symbolic_head.status.success() {
+        return Ok(());
+    }
+    if symbolic_head.status.code() != Some(1) {
+        bail!(
+            "Could not inspect Git HEAD at {}: {}",
+            worktree.display(),
+            String::from_utf8_lossy(&symbolic_head.stderr).trim()
+        );
+    }
+    let head = git_stdout(worktree, ["rev-parse", "HEAD"])?;
+    let refs = git_stdout(
+        worktree,
+        ["for-each-ref", "--format=%(refname)", "--contains", &head],
+    )?;
+    if refs.is_empty() {
+        bail!(
+            "Worktree HEAD {head} is not reachable from a branch or tag; create one before deleting the session"
+        );
+    }
+    Ok(())
+}
+
 fn run_git<const N: usize>(cwd: &Path, args: [&str; N]) -> Result<()> {
     let output = Command::new("git")
         .arg("-C")
@@ -600,6 +695,148 @@ mod tests {
                     "--verify",
                     "--quiet",
                     "refs/heads/switchyard-session-test",
+                ])
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+
+    #[test]
+    fn removes_a_clean_registered_worktree() {
+        let root = tempfile::tempdir().unwrap();
+        let repository = root.path().join("repository");
+        let checkout = root.path().join("checkout");
+        initialize_test_repository(&repository);
+        assert!(
+            Command::new("git")
+                .arg("-C")
+                .arg(&repository)
+                .args(["worktree", "add", "--detach"])
+                .arg(&checkout)
+                .status()
+                .unwrap()
+                .success()
+        );
+
+        remove_worktree(&repository, &checkout).unwrap();
+
+        assert!(!checkout.exists());
+    }
+
+    #[test]
+    fn refuses_to_remove_a_dirty_registered_worktree() {
+        let root = tempfile::tempdir().unwrap();
+        let repository = root.path().join("repository");
+        let checkout = root.path().join("checkout");
+        initialize_test_repository(&repository);
+        assert!(
+            Command::new("git")
+                .arg("-C")
+                .arg(&repository)
+                .args(["worktree", "add", "--detach"])
+                .arg(&checkout)
+                .status()
+                .unwrap()
+                .success()
+        );
+        fs::write(checkout.join("unsaved.txt"), "keep me").unwrap();
+
+        assert!(remove_worktree(&repository, &checkout).is_err());
+        assert!(checkout.exists());
+    }
+
+    #[test]
+    fn refuses_to_remove_an_unreferenced_detached_commit() {
+        let root = tempfile::tempdir().unwrap();
+        let repository = root.path().join("repository");
+        let checkout = root.path().join("checkout");
+        initialize_test_repository(&repository);
+        assert!(
+            Command::new("git")
+                .arg("-C")
+                .arg(&repository)
+                .args(["worktree", "add", "--detach"])
+                .arg(&checkout)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(
+            Command::new("git")
+                .arg("-C")
+                .arg(&checkout)
+                .args([
+                    "-c",
+                    "user.name=Switchyard Test",
+                    "-c",
+                    "user.email=switchyard@example.invalid",
+                    "commit",
+                    "--allow-empty",
+                    "-m",
+                    "detached work",
+                ])
+                .status()
+                .unwrap()
+                .success()
+        );
+
+        let error = remove_worktree(&repository, &checkout).unwrap_err();
+
+        assert!(format!("{error:#}").contains("not reachable from a branch or tag"));
+        assert!(checkout.exists());
+    }
+
+    #[test]
+    fn removes_stale_git_metadata_when_the_worktree_directory_is_missing() {
+        let root = tempfile::tempdir().unwrap();
+        let repository = root.path().join("repository");
+        let checkout = root.path().join("checkout");
+        initialize_test_repository(&repository);
+        assert!(
+            Command::new("git")
+                .arg("-C")
+                .arg(&repository)
+                .args(["worktree", "add", "--detach"])
+                .arg(&checkout)
+                .status()
+                .unwrap()
+                .success()
+        );
+        fs::remove_dir_all(&checkout).unwrap();
+
+        remove_worktree(&repository, &checkout).unwrap();
+
+        let worktrees = git_stdout(&repository, ["worktree", "list", "--porcelain"]).unwrap();
+        assert!(
+            !worktrees.contains(checkout.to_string_lossy().as_ref()),
+            "{worktrees}"
+        );
+    }
+
+    fn initialize_test_repository(repository: &Path) {
+        fs::create_dir(repository).unwrap();
+        assert!(
+            Command::new("git")
+                .args(["init", "--initial-branch", "main"])
+                .arg(repository)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(
+            Command::new("git")
+                .arg("-C")
+                .arg(repository)
+                .args([
+                    "-c",
+                    "user.name=Switchyard Test",
+                    "-c",
+                    "user.email=switchyard@example.invalid",
+                    "commit",
+                    "--allow-empty",
+                    "-m",
+                    "initial",
                 ])
                 .status()
                 .unwrap()

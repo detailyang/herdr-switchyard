@@ -9,7 +9,7 @@ use anyhow::{Context, Result, bail};
 use fs2::FileExt;
 use serde::de::DeserializeOwned;
 
-use crate::model::{Config, State, is_supported_agent};
+use crate::model::{Config, Project, State, is_supported_agent};
 
 #[derive(Debug, Clone)]
 pub struct Store {
@@ -64,6 +64,31 @@ impl Store {
     }
 
     pub fn update_state<T>(&self, update: impl FnOnce(&mut State) -> Result<T>) -> Result<T> {
+        self.with_state_lock(|| {
+            let mut state = self.load_state_unlocked()?;
+            let update_result = update(&mut state);
+            self.save_state_unlocked(&state)?;
+            update_result
+        })
+    }
+
+    pub fn update_config<T>(
+        &self,
+        update: impl FnOnce(&mut Config, &State) -> Result<T>,
+    ) -> Result<(Config, T)> {
+        self.with_state_lock(|| {
+            let state = self.load_state_unlocked()?;
+            let mut config = self.load_config()?;
+            let original = config.clone();
+            let value = update(&mut config, &state)?;
+            if config != original {
+                self.save_config(&config)?;
+            }
+            Ok((config, value))
+        })
+    }
+
+    fn with_state_lock<T>(&self, operation: impl FnOnce() -> Result<T>) -> Result<T> {
         fs::create_dir_all(&self.state_dir)
             .with_context(|| format!("create {}", self.state_dir.display()))?;
         let lock_path = self.state_dir.join("sessions.lock");
@@ -76,15 +101,46 @@ impl Store {
             .with_context(|| format!("open {}", lock_path.display()))?;
         lock.lock_exclusive()
             .with_context(|| format!("lock {}", lock_path.display()))?;
-
-        let mut state = self.load_state_unlocked()?;
-        let update_result = update(&mut state);
-        let save_result = self.save_state_unlocked(&state);
+        let operation_result = operation();
         let unlock_result =
             FileExt::unlock(&lock).with_context(|| format!("unlock {}", lock_path.display()));
-        save_result?;
         unlock_result?;
-        update_result
+        operation_result
+    }
+
+    pub fn update_project_state<T>(
+        &self,
+        project_id: &str,
+        update: impl FnOnce(&Project, &mut State) -> Result<T>,
+    ) -> Result<T> {
+        self.update_state(|state| {
+            let config = self.load_config()?;
+            let project = config
+                .projects
+                .iter()
+                .find(|project| project.id == project_id)
+                .with_context(|| format!("project {project_id:?} is no longer configured"))?;
+            update(project, state)
+        })
+    }
+
+    pub fn remove_project(&self, project_id: &str) -> Result<Config> {
+        self.update_config(|config, state| {
+            if state
+                .sessions
+                .iter()
+                .any(|session| session.project_id == project_id)
+            {
+                bail!("project {project_id:?} still has sessions");
+            }
+            let previous_len = config.projects.len();
+            config.projects.retain(|project| project.id != project_id);
+            if config.projects.len() == previous_len {
+                bail!("project {project_id:?} is no longer configured");
+            }
+            Ok(())
+        })
+        .map(|(config, ())| config)
     }
 
     fn load_state_unlocked(&self) -> Result<State> {

@@ -6,7 +6,8 @@ use std::{
 use anyhow::Result;
 use herdr_switchyard::{
     coordinator::{
-        Activation, Herdr, activate_existing, agent_name, create_session, sync_agent_sessions,
+        Activation, Herdr, activate_existing, agent_name, create_session, delete_session,
+        sync_agent_sessions,
     },
     model::{
         AgentSession, CreatedAgentPane, CreatedWorktree, OpenedWorkspace, Project, RuntimeAgent,
@@ -185,6 +186,30 @@ fn creates_a_worktree_records_it_and_starts_the_project_agent() {
             format!("start:{}:codex:w2:p1:", agent_name(&project(), "feat/one"))
         ]
     );
+}
+
+#[test]
+fn refuses_to_delete_an_open_session() {
+    let herdr = FakeHerdr {
+        snapshot: RuntimeSnapshot {
+            workspaces: vec![RuntimeWorkspace {
+                id: "w1".into(),
+                checkout_path: PathBuf::from("/worktrees/demo/feat-one"),
+            }],
+            agents: Vec::new(),
+        },
+        ..Default::default()
+    };
+    let mut state = State {
+        sessions: vec![session("/worktrees/demo/feat-one")],
+        ..Default::default()
+    };
+
+    let error = delete_session(&herdr, &project(), &mut state, "feat/one").unwrap_err();
+
+    assert!(format!("{error:#}").contains("Close its Herdr workspace first"));
+    assert_eq!(state.sessions.len(), 1);
+    assert!(herdr.calls.into_inner().is_empty());
 }
 
 #[test]

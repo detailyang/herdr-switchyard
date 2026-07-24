@@ -56,6 +56,108 @@ fn project_config_and_session_state_round_trip_in_separate_files() {
 }
 
 #[test]
+fn project_updates_reject_a_project_removed_under_the_state_lock() {
+    let root = tempdir().unwrap();
+    let store = Store::new(root.path().join("config"), root.path().join("state"));
+    let config = Config {
+        version: 1,
+        ui: Default::default(),
+        projects: vec![Project {
+            id: "demo".into(),
+            name: "Demo".into(),
+            path: PathBuf::from("/repos/demo"),
+            agent: "codex".into(),
+            base_branch: "main".into(),
+            agent_args: Vec::new(),
+        }],
+    };
+    store.save_config(&config).unwrap();
+    store.remove_project("demo").unwrap();
+
+    let error = store
+        .update_project_state("demo", |_project, _state| Ok(()))
+        .unwrap_err();
+
+    assert!(error.to_string().contains("no longer configured"));
+}
+
+#[test]
+fn config_updates_reload_the_latest_config_under_the_state_lock() {
+    let root = tempdir().unwrap();
+    let store = Store::new(root.path().join("config"), root.path().join("state"));
+    store.save_config(&Config::default()).unwrap();
+
+    let (config, ()) = store
+        .update_config(|config, _state| {
+            config.projects.push(Project {
+                id: "new".into(),
+                name: "New".into(),
+                path: PathBuf::from("/repos/new"),
+                agent: "pi".into(),
+                base_branch: "main".into(),
+                agent_args: Vec::new(),
+            });
+            Ok(())
+        })
+        .unwrap();
+
+    assert_eq!(config.projects[0].id, "new");
+    assert_eq!(store.load_config().unwrap(), config);
+}
+
+#[test]
+fn unchanged_config_updates_preserve_user_comments_and_formatting() {
+    let root = tempdir().unwrap();
+    let config_dir = root.path().join("config");
+    fs::create_dir_all(&config_dir).unwrap();
+    let original = "# keep this comment\nversion = 1\n";
+    fs::write(config_dir.join("config.toml"), original).unwrap();
+    let store = Store::new(config_dir, root.path().join("state"));
+
+    store.update_config(|_config, _state| Ok(())).unwrap();
+
+    assert_eq!(fs::read_to_string(store.config_path()).unwrap(), original);
+}
+
+#[test]
+fn project_removal_is_blocked_by_sessions_under_the_same_state_lock() {
+    let root = tempdir().unwrap();
+    let store = Store::new(root.path().join("config"), root.path().join("state"));
+    let config = Config {
+        version: 1,
+        ui: Default::default(),
+        projects: vec![Project {
+            id: "demo".into(),
+            name: "Demo".into(),
+            path: PathBuf::from("/repos/demo"),
+            agent: "codex".into(),
+            base_branch: "main".into(),
+            agent_args: Vec::new(),
+        }],
+    };
+    store.save_config(&config).unwrap();
+    store
+        .update_state(|state| {
+            state.sessions.push(Session {
+                project_id: "demo".into(),
+                name: "feat/one".into(),
+                worktree_path: PathBuf::from("/worktrees/demo/feat-one"),
+                pending_temporary_branch: None,
+                created_at_ms: 1,
+                last_used_at_ms: 2,
+                agent_session: None,
+            });
+            Ok(())
+        })
+        .unwrap();
+
+    let error = store.remove_project("demo").unwrap_err();
+
+    assert!(error.to_string().contains("still has sessions"));
+    assert_eq!(store.load_config().unwrap(), config);
+}
+
+#[test]
 fn state_changes_survive_a_later_operation_error() {
     let root = tempdir().unwrap();
     let store = Store::new(root.path().join("config"), root.path().join("state"));
