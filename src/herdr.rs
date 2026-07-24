@@ -463,20 +463,26 @@ impl Herdr for CliHerdr {
         Ok(())
     }
 
-    fn start_agent(&self, name: &str, kind: &str, pane_id: &str, args: &[String]) -> Result<()> {
+    fn start_agent(
+        &self,
+        name: &str,
+        kind: &str,
+        workspace_id: &str,
+        tab_id: Option<&str>,
+        args: &[String],
+    ) -> Result<()> {
         let mut command = vec![
             OsString::from("agent"),
             OsString::from("start"),
             OsString::from(name),
-            OsString::from("--kind"),
-            OsString::from(kind),
-            OsString::from("--pane"),
-            OsString::from(pane_id),
+            OsString::from("--workspace"),
+            OsString::from(workspace_id),
         ];
-        if !args.is_empty() {
-            command.push(OsString::from("--"));
-            command.extend(args.iter().map(OsString::from));
+        if let Some(tab_id) = tab_id {
+            command.extend([OsString::from("--tab"), OsString::from(tab_id)]);
         }
+        command.extend([OsString::from("--"), OsString::from(kind)]);
+        command.extend(args.iter().map(OsString::from));
         self.run_json(command)?;
         Ok(())
     }

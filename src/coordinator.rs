@@ -53,7 +53,14 @@ pub trait Herdr {
     fn close_agent_tab(&self, pane_id: &str) -> Result<()>;
     fn workspace_for_tab(&self, tab_id: &str) -> Result<Option<String>>;
     fn close_workspace(&self, workspace_id: &str) -> Result<()>;
-    fn start_agent(&self, name: &str, kind: &str, pane_id: &str, args: &[String]) -> Result<()>;
+    fn start_agent(
+        &self,
+        name: &str,
+        kind: &str,
+        workspace_id: &str,
+        tab_id: Option<&str>,
+        args: &[String],
+    ) -> Result<()>;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -145,9 +152,21 @@ pub fn activate_existing<H: Herdr>(
                 )
             };
             let start_result = if recovered_pending_detach {
-                start_new_agent(herdr, project, session, &created.pane_id)
+                start_new_agent(
+                    herdr,
+                    project,
+                    session,
+                    &workspace.id,
+                    Some(&created.tab_id),
+                )
             } else {
-                start_resumed_agent(herdr, project, session, &created.pane_id)
+                start_resumed_agent(
+                    herdr,
+                    project,
+                    session,
+                    &workspace.id,
+                    Some(&created.tab_id),
+                )
             };
             if let Err(start_error) = start_result {
                 if close_on_failure && let Err(close_error) = herdr.close_tab(&created.tab_id) {
@@ -186,10 +205,22 @@ pub fn activate_existing<H: Herdr>(
         }
     };
     if recovered_pending_detach {
-        start_new_agent(herdr, project, session, &opened.pane_id)?;
+        start_new_agent(
+            herdr,
+            project,
+            session,
+            &opened.workspace_id,
+            opened.tab_id.as_deref(),
+        )?;
         session.pending_temporary_branch = None;
     } else {
-        start_resumed_agent(herdr, project, session, &opened.pane_id)?;
+        start_resumed_agent(
+            herdr,
+            project,
+            session,
+            &opened.workspace_id,
+            opened.tab_id.as_deref(),
+        )?;
     }
     session.tab_id = opened.tab_id;
     session.tab_namespace = herdr.runtime_namespace();
@@ -251,7 +282,8 @@ pub fn create_session<H: Herdr>(
         herdr,
         project,
         state.sessions.last().expect("session was just registered"),
-        &created.workspace.pane_id,
+        &created.workspace.workspace_id,
+        created.workspace.tab_id.as_deref(),
     )?;
     if let Some(warning) = created.warning {
         bail!("session was created, registered, and started, but {warning}");
@@ -290,7 +322,13 @@ fn create_local_session<H: Herdr>(
             .focus_workspace(&workspace.id)
             .with_context(|| format!("focus workspace for session {session_name:?}"))?;
         let created = herdr.create_agent_pane(&workspace.id, session_name, &project.path)?;
-        if let Err(start_error) = start_new_agent(herdr, project, session, &created.pane_id) {
+        if let Err(start_error) = start_new_agent(
+            herdr,
+            project,
+            session,
+            &workspace.id,
+            Some(&created.tab_id),
+        ) {
             if let Err(close_error) = herdr.close_tab(&created.tab_id) {
                 return Err(start_error.context(format!(
                     "also failed to close new agent tab {}: {close_error:#}",
@@ -304,7 +342,13 @@ fn create_local_session<H: Herdr>(
         let opened = herdr
             .open_local(project, session)
             .with_context(|| format!("open local session {session_name:?}"))?;
-        start_new_agent(herdr, project, session, &opened.pane_id)?;
+        start_new_agent(
+            herdr,
+            project,
+            session,
+            &opened.workspace_id,
+            opened.tab_id.as_deref(),
+        )?;
         opened.tab_id
     };
     state
@@ -474,13 +518,15 @@ fn start_new_agent<H: Herdr>(
     herdr: &H,
     project: &Project,
     session: &Session,
-    pane_id: &str,
+    workspace_id: &str,
+    tab_id: Option<&str>,
 ) -> Result<()> {
     herdr
         .start_agent(
             &agent_name(project, &session.name),
             &project.agent,
-            pane_id,
+            workspace_id,
+            tab_id,
             &project.agent_args,
         )
         .with_context(|| format!("start {} for session {:?}", project.agent, session.name))
@@ -490,13 +536,15 @@ fn start_resumed_agent<H: Herdr>(
     herdr: &H,
     project: &Project,
     session: &Session,
-    pane_id: &str,
+    workspace_id: &str,
+    tab_id: Option<&str>,
 ) -> Result<()> {
     let args = resume_args(project, session)?;
     herdr.start_agent(
         &agent_name(project, &session.name),
         &project.agent,
-        pane_id,
+        workspace_id,
+        tab_id,
         &args,
     )
 }

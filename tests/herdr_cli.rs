@@ -137,6 +137,28 @@ fn parses_the_runtime_snapshot_from_herdr_json() {
 }
 
 #[test]
+fn starts_an_agent_in_the_selected_workspace_tab() {
+    let (_root, herdr, log) = fake_herdr();
+
+    herdr
+        .start_agent(
+            "demo-agent",
+            "pi",
+            "w1",
+            Some("w1:t4"),
+            &["--session".into(), "/sessions/demo.jsonl".into()],
+        )
+        .unwrap();
+
+    let calls = fs::read_to_string(log).unwrap();
+    assert!(calls.contains(
+        "agent start demo-agent --workspace w1 --tab w1:t4 -- pi --session /sessions/demo.jsonl"
+    ));
+    assert!(!calls.contains("--kind"));
+    assert!(!calls.contains("--pane"));
+}
+
+#[test]
 fn creates_a_named_project_workspace_instead_of_reusing_an_unrelated_workspace_at_the_same_path() {
     let (_root, herdr, log) = fake_herdr();
 

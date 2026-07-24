@@ -195,10 +195,19 @@ impl Herdr for FakeHerdr {
         Ok(())
     }
 
-    fn start_agent(&self, name: &str, kind: &str, pane_id: &str, args: &[String]) -> Result<()> {
-        self.calls
-            .borrow_mut()
-            .push(format!("start:{name}:{kind}:{pane_id}:{}", args.join(" ")));
+    fn start_agent(
+        &self,
+        name: &str,
+        kind: &str,
+        workspace_id: &str,
+        tab_id: Option<&str>,
+        args: &[String],
+    ) -> Result<()> {
+        self.calls.borrow_mut().push(format!(
+            "start:{name}:{kind}:{workspace_id}:{}:{}",
+            tab_id.unwrap_or("-"),
+            args.join(" ")
+        ));
         if self.fail_start {
             anyhow::bail!("agent start failed");
         }
@@ -287,7 +296,10 @@ fn creates_a_worktree_records_it_and_starts_the_project_agent() {
         [
             "ensure-project-workspace:demo".to_owned(),
             "create:demo:w-root:feat/one".to_owned(),
-            format!("start:{}:codex:w2:p1:", agent_name(&project(), "feat/one"))
+            format!(
+                "start:{}:codex:w2:w2:t1:",
+                agent_name(&project(), "feat/one")
+            )
         ]
     );
 }
@@ -334,10 +346,10 @@ fn creates_multiple_local_sessions_in_dedicated_tabs_of_the_project_workspace() 
         [
             "focus:w1".to_owned(),
             "create-agent-pane:w1:first:/repos/demo".to_owned(),
-            format!("start:{}:codex:w1:p4:", agent_name(&project(), "first")),
+            format!("start:{}:codex:w1:w1:t4:", agent_name(&project(), "first")),
             "focus:w1".to_owned(),
             "create-agent-pane:w1:second:/repos/demo".to_owned(),
-            format!("start:{}:codex:w1:p4:", agent_name(&project(), "second")),
+            format!("start:{}:codex:w1:w1:t4:", agent_name(&project(), "second")),
         ]
     );
 }
@@ -360,7 +372,7 @@ fn opens_a_dormant_local_session_in_the_project_directory() {
         [
             "open-local:demo:feat/one".to_owned(),
             format!(
-                "start:{}:codex:w2:p1:resume",
+                "start:{}:codex:w2:w2:t1:resume",
                 agent_name(&project(), "feat/one")
             ),
         ]
@@ -833,7 +845,10 @@ fn retries_a_pending_detach_before_starting_a_new_agent() {
             "finish-detach:demo:feat/one:switchyard-session-pending".to_owned(),
             "focus:w1".to_owned(),
             "create-agent-pane:w1:feat/one:/worktrees/demo/feat-one".to_owned(),
-            format!("start:{}:codex:w1:p4:", agent_name(&project(), "feat/one")),
+            format!(
+                "start:{}:codex:w1:w1:t4:",
+                agent_name(&project(), "feat/one")
+            ),
         ]
     );
 }
@@ -890,7 +905,7 @@ fn opens_a_dormant_worktree_and_resumes_its_exact_agent_session() {
             "ensure-project-workspace:demo".to_owned(),
             "open:demo:w-root:feat/one".to_owned(),
             format!(
-                "start:{}:codex:w2:p1:resume session-123",
+                "start:{}:codex:w2:w2:t1:resume session-123",
                 agent_name(&project(), "feat/one")
             )
         ]
@@ -915,7 +930,7 @@ fn opens_a_dormant_pi_session_without_history_as_a_new_session() {
         [
             "ensure-project-workspace:demo".to_owned(),
             "open:demo:w-root:feat/one".to_owned(),
-            format!("start:{}:pi:w2:p1:", agent_name(&pi_project, "feat/one"))
+            format!("start:{}:pi:w2:w2:t1:", agent_name(&pi_project, "feat/one"))
         ]
     );
 }
@@ -945,7 +960,7 @@ fn opens_a_dormant_pi_session_with_its_exact_history() {
             "ensure-project-workspace:demo".to_owned(),
             "open:demo:w-root:feat/one".to_owned(),
             format!(
-                "start:{}:pi:w2:p1:--session /sessions/pi.jsonl",
+                "start:{}:pi:w2:w2:t1:--session /sessions/pi.jsonl",
                 agent_name(&pi_project, "feat/one")
             )
         ]
@@ -972,7 +987,7 @@ fn opens_a_dormant_pi_session_with_a_non_path_reference_as_new() {
 
     assert_eq!(
         herdr.calls.into_inner().last().unwrap(),
-        &format!("start:{}:pi:w2:p1:", agent_name(&pi_project, "feat/one"))
+        &format!("start:{}:pi:w2:w2:t1:", agent_name(&pi_project, "feat/one"))
     );
 }
 
@@ -1103,7 +1118,7 @@ fn creates_a_dedicated_tab_when_only_an_unrelated_agent_is_running() {
             "focus:w1".to_owned(),
             "create-agent-pane:w1:feat/one:/worktrees/demo/feat-one".to_owned(),
             format!(
-                "start:{}:codex:w1:p4:resume",
+                "start:{}:codex:w1:w1:t4:resume",
                 agent_name(&project(), "feat/one")
             )
         ]
@@ -1144,7 +1159,7 @@ fn reuses_an_existing_session_tab_when_its_agent_has_exited() {
             "focus:w1".to_owned(),
             "reuse-agent-pane:w1:feat/one:/worktrees/demo/feat-one:w1:t3".to_owned(),
             format!(
-                "start:{}:codex:w1:p3:resume",
+                "start:{}:codex:w1:w1:t3:resume",
                 agent_name(&project(), "feat/one")
             ),
             "focus-agent:w1:p3".to_owned(),
@@ -1254,7 +1269,7 @@ fn closes_a_new_agent_tab_when_resume_start_fails() {
             "focus:w1".to_owned(),
             "create-agent-pane:w1:feat/one:/worktrees/demo/feat-one".to_owned(),
             format!(
-                "start:{}:codex:w1:p4:resume",
+                "start:{}:codex:w1:w1:t4:resume",
                 agent_name(&project(), "feat/one")
             ),
             "close-tab:w1:t4".to_owned(),

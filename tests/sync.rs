@@ -118,7 +118,8 @@ impl Herdr for SnapshotHerdr {
         &self,
         _name: &str,
         _kind: &str,
-        _pane_id: &str,
+        _workspace_id: &str,
+        _tab_id: Option<&str>,
         _args: &[String],
     ) -> Result<()> {
         bail!("not used")
