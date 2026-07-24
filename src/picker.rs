@@ -1185,26 +1185,20 @@ impl Picker {
             layout.session_search,
         );
         let new_selected = focused && self.session_selected == 0;
+        let new_session_style = Style::default()
+            .fg(theme.accent)
+            .add_modifier(Modifier::BOLD);
+        let new_session_style = if new_selected {
+            new_session_style.add_modifier(Modifier::UNDERLINED)
+        } else {
+            new_session_style
+        };
         frame.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::styled("+  ", Style::default().fg(theme.accent)),
-                Span::styled(
-                    "New session",
-                    Style::default()
-                        .fg(if new_selected {
-                            theme.primary_text
-                        } else {
-                            theme.accent
-                        })
-                        .add_modifier(Modifier::BOLD),
-                ),
+                Span::styled("New session", new_session_style),
             ]))
             .alignment(Alignment::Right)
-            .style(if new_selected {
-                Style::default().bg(theme.selected_surface)
-            } else {
-                Style::default()
-            })
             .block(
                 Block::new()
                     .borders(Borders::BOTTOM)
@@ -2710,6 +2704,28 @@ mod tests {
         assert!(rendered.contains("feat/one"));
         assert!(!rendered.contains("Switchyard"));
         assert!(!rendered.contains("↑/k"));
+    }
+
+    #[test]
+    fn focused_new_session_action_does_not_use_the_row_highlight_background() {
+        let mut picker = picker();
+        picker.handle_key(key(KeyCode::Enter));
+        picker.handle_key(key(KeyCode::Char('/')));
+        let area = Rect::new(0, 0, 120, 36);
+        let layout = UiLayout::new(area);
+        let backend = TestBackend::new(area.width, area.height);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal.draw(|frame| picker.draw(frame)).unwrap();
+
+        let action_background = terminal
+            .backend()
+            .buffer()
+            .cell((layout.new_session.x + 1, layout.new_session.y + 1))
+            .unwrap()
+            .bg;
+        assert_eq!(action_background, picker.theme.panel);
+        assert_ne!(action_background, picker.theme.selected_surface);
     }
 
     #[test]
