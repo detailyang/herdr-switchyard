@@ -128,7 +128,7 @@ impl Herdr for CliHerdr {
         ];
         let workspace = match self
             .run_json(args)
-            .and_then(|response| opened_workspace(&response))
+            .and_then(|response| self.opened_workspace_with_tab_label(&response, session_name))
         {
             Ok(workspace) => workspace,
             Err(create_error) => {
@@ -150,7 +150,9 @@ impl Herdr for CliHerdr {
                         OsString::from("--focus"),
                         OsString::from("--json"),
                     ])
-                    .and_then(|response| opened_workspace(&response))
+                    .and_then(|response| {
+                        self.opened_workspace_with_tab_label(&response, session_name)
+                    })
                     .with_context(|| {
                         format!(
                             "recover created Herdr worktree after an invalid create response: {create_error:#}"
@@ -216,7 +218,8 @@ impl Herdr for CliHerdr {
             OsString::from("--focus"),
             OsString::from("--json"),
         ];
-        opened_workspace(&self.run_json(args)?)
+        let response = self.run_json(args)?;
+        self.opened_workspace_with_tab_label(&response, &session.name)
     }
 
     fn focus_workspace(&self, workspace_id: &str) -> Result<()> {
@@ -273,6 +276,28 @@ impl Herdr for CliHerdr {
         }
         self.run_json(command)?;
         Ok(())
+    }
+}
+
+impl CliHerdr {
+    fn opened_workspace_with_tab_label(
+        &self,
+        response: &Value,
+        label: &str,
+    ) -> Result<OpenedWorkspace> {
+        let workspace = opened_workspace(response)?;
+        if let Some(tab_id) = response
+            .pointer("/result/tab/tab_id")
+            .and_then(Value::as_str)
+        {
+            self.run_json([
+                OsString::from("tab"),
+                OsString::from("rename"),
+                OsString::from(tab_id),
+                OsString::from(label),
+            ])?;
+        }
+        Ok(workspace)
     }
 }
 

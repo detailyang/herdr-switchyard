@@ -33,7 +33,7 @@ case "$1 $2" in
     printf '%s\n' '{{"result":{{"type":"worktree_created","workspace":{{"workspace_id":"w2"}},"root_pane":{{"pane_id":"w2:p1"}},"worktree":{{"path":"/worktrees/demo/feat-two"}}}}}}'
     ;;
   "worktree open")
-    printf '%s\n' '{{"result":{{"type":"worktree_opened","workspace":{{"workspace_id":"w3"}},"root_pane":{{"pane_id":"w3:p1"}},"worktree":{{"path":"/worktrees/demo/feat-one"}}}}}}'
+    printf '%s\n' '{{"result":{{"type":"worktree_opened","workspace":{{"workspace_id":"w3"}},"tab":{{"tab_id":"w3:t1"}},"root_pane":{{"pane_id":"w3:p1"}},"worktree":{{"path":"/worktrees/demo/feat-one"}}}}}}'
     ;;
   "tab create")
     printf '%s\n' '{{"result":{{"type":"tab_created","tab":{{"tab_id":"w1:t4"}},"root_pane":{{"pane_id":"w1:p4"}}}}}}'
@@ -136,6 +136,10 @@ fn creates_a_focused_detached_worktree_without_persisting_a_session_branch() {
     let script = format!(
         r#"#!/bin/sh
 printf '%s\n' "$*" >> '{}'
+if [ "$1 $2" = "tab rename" ]; then
+  printf '%s\n' '{{"result":{{"type":"tab_renamed"}}}}'
+  exit 0
+fi
 cwd=''
 branch=''
 base=''
@@ -148,7 +152,7 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 git -C "$cwd" worktree add -b "$branch" '{}' "$base" >/dev/null 2>&1 || exit 1
-printf '%s\n' '{{"result":{{"type":"worktree_created","workspace":{{"workspace_id":"w2"}},"root_pane":{{"pane_id":"w2:p1"}},"worktree":{{"path":"{}"}}}}}}'
+printf '%s\n' '{{"result":{{"type":"worktree_created","workspace":{{"workspace_id":"w2"}},"tab":{{"tab_id":"w2:t1"}},"root_pane":{{"pane_id":"w2:p1"}},"worktree":{{"path":"{}"}}}}}}'
 "#,
         log.display(),
         checkout.display(),
@@ -207,6 +211,7 @@ printf '%s\n' '{{"result":{{"type":"worktree_created","workspace":{{"workspace_i
     assert!(calls.contains(&format!(
         "--base {base_commit} --label Improve login flow --focus --json"
     )));
+    assert!(calls.contains("tab rename w2:t1 Improve login flow"));
     assert!(!calls.contains("--branch Improve login flow"));
 }
 
@@ -370,6 +375,7 @@ fn opens_a_registered_worktree_by_its_persisted_path() {
     assert!(calls.contains(
         "worktree open --cwd /repos/demo --path /worktrees/demo/feat-one --label feat/one --focus --json"
     ));
+    assert!(calls.contains("tab rename w3:t1 feat/one"));
 }
 
 #[test]
