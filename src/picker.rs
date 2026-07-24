@@ -466,6 +466,14 @@ impl Picker {
             return Intent::None;
         }
         if self.searching {
+            if key.code == KeyCode::Tab {
+                self.searching = false;
+                self.last_click = None;
+                return match self.focused_pane {
+                    FocusedPane::Projects => self.handle_projects(KeyCode::Tab),
+                    FocusedPane::Sessions => self.handle_sessions(KeyCode::Tab),
+                };
+            }
             let previous_project = (self.focused_pane == FocusedPane::Projects)
                 .then(|| self.active_project_id())
                 .flatten();
@@ -1156,7 +1164,7 @@ impl Picker {
                 self.open_add_project();
                 Intent::None
             }
-            KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => {
+            KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') | KeyCode::Tab => {
                 let projects = self.filtered_project_indices();
                 if self
                     .project_selected
@@ -1180,7 +1188,7 @@ impl Picker {
         };
         match key {
             KeyCode::Char('q') => Intent::Quit,
-            KeyCode::Esc | KeyCode::Left | KeyCode::Char('h') => {
+            KeyCode::Esc | KeyCode::Left | KeyCode::Char('h') | KeyCode::Tab => {
                 self.focused_pane = FocusedPane::Projects;
                 Intent::None
             }
@@ -2821,6 +2829,19 @@ mod tests {
     }
 
     #[test]
+    fn tab_ends_search_and_switches_to_the_other_pane() {
+        let mut picker = picker();
+        picker.handle_key(key(KeyCode::Char('/')));
+        picker.handle_key(key(KeyCode::Char('d')));
+
+        assert_eq!(picker.handle_key(key(KeyCode::Tab)), Intent::None);
+
+        assert!(!picker.searching);
+        assert_eq!(picker.project_filter, "d");
+        assert_eq!(picker.focused_pane, FocusedPane::Sessions);
+    }
+
+    #[test]
     fn new_session_form_returns_a_create_intent() {
         let mut picker = picker();
         picker.handle_key(key(KeyCode::Enter));
@@ -4160,7 +4181,7 @@ mod tests {
         assert_eq!(session_marker.symbol(), " ");
         assert_eq!(session_marker.bg, picker.theme.panel);
 
-        picker.handle_key(key(KeyCode::Char('l')));
+        picker.handle_key(key(KeyCode::Tab));
         picker.handle_key(key(KeyCode::Char('j')));
         terminal.draw(|frame| picker.draw(frame)).unwrap();
 
@@ -4175,6 +4196,21 @@ mod tests {
         assert_eq!(project_marker.bg, picker.theme.panel);
         assert_eq!(session_marker.symbol(), "▌");
         assert_eq!(session_marker.bg, picker.theme.selected_surface);
+
+        picker.handle_key(key(KeyCode::Tab));
+        terminal.draw(|frame| picker.draw(frame)).unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let project_marker = buffer
+            .cell((layout.project_rows.x, layout.project_rows.y))
+            .unwrap();
+        let session_marker = buffer
+            .cell((layout.session_rows.x, layout.session_rows.y))
+            .unwrap();
+        assert_eq!(project_marker.symbol(), "▌");
+        assert_eq!(project_marker.bg, picker.theme.selected_surface);
+        assert_eq!(session_marker.symbol(), " ");
+        assert_eq!(session_marker.bg, picker.theme.panel);
     }
 
     #[test]
