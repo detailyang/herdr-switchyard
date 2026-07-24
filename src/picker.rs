@@ -84,6 +84,30 @@ struct DeleteConfirmationLayout {
     cancel: Rect,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct ContextMenuLayout {
+    popup: Rect,
+    pin: Rect,
+    remove: Rect,
+}
+
+impl ContextMenuLayout {
+    fn new(area: Rect, column: u16, row: u16) -> Self {
+        let width = 20.min(area.width);
+        let height = 4.min(area.height);
+        let x = column.min(area.right().saturating_sub(width));
+        let y = row.min(area.bottom().saturating_sub(height));
+        let popup = Rect::new(x, y, width, height);
+        let inner = Block::bordered().inner(popup);
+        let rows = Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).split(inner);
+        Self {
+            popup,
+            pin: rows[0],
+            remove: rows[1],
+        }
+    }
+}
+
 impl DeleteConfirmationLayout {
     fn new(area: Rect) -> Self {
         let width = area.width.saturating_sub(4).clamp(1, 64);
@@ -200,8 +224,6 @@ struct UiLayout {
     session_search: Rect,
     new_session: Rect,
     session_rows: Rect,
-    detail: Rect,
-    focus_agent: Rect,
 }
 
 impl UiLayout {
@@ -224,23 +246,11 @@ impl UiLayout {
         .split(projects_inner);
 
         let sessions_inner = Block::bordered().inner(sessions_panel);
-        let session_chunks = Layout::vertical([
-            Constraint::Length(3),
-            Constraint::Percentage(45),
-            Constraint::Min(5),
-        ])
-        .split(sessions_inner);
+        let session_chunks =
+            Layout::vertical([Constraint::Length(3), Constraint::Min(1)]).split(sessions_inner);
         let session_actions =
             Layout::horizontal([Constraint::Percentage(55), Constraint::Percentage(45)])
                 .split(session_chunks[0]);
-        let detail_inner = Block::new().borders(Borders::TOP).inner(session_chunks[2]);
-        let focus_agent = Rect::new(
-            detail_inner.x.saturating_add(2),
-            detail_inner.bottom().saturating_sub(3),
-            detail_inner.width.saturating_sub(4).min(24),
-            3.min(detail_inner.height),
-        );
-
         Self {
             projects_panel,
             project_search: project_chunks[0],
@@ -250,8 +260,6 @@ impl UiLayout {
             session_search: session_actions[0],
             new_session: session_actions[1],
             session_rows: session_chunks[1],
-            detail: session_chunks[2],
-            focus_agent,
         }
     }
 }
@@ -274,6 +282,13 @@ pub enum Intent {
         project_id: String,
     },
     DeleteSession {
+        project_id: String,
+        session_name: String,
+    },
+    ToggleProjectPin {
+        project_id: String,
+    },
+    ToggleSessionPin {
         project_id: String,
         session_name: String,
     },
@@ -300,6 +315,12 @@ enum View {
         project_id: String,
         input: String,
         mode: SessionMode,
+    },
+    ContextMenu {
+        target: DeleteTarget,
+        column: u16,
+        row: u16,
+        selected: usize,
     },
     ConfirmDelete(DeleteTarget),
 }
@@ -465,6 +486,12 @@ impl Picker {
                 mode,
             } => self.handle_new_session(key.code, project_id, input, mode),
             View::AddProject(draft) => self.handle_add_project(key.code, draft),
+            View::ContextMenu {
+                target,
+                column,
+                row,
+                selected,
+            } => self.handle_context_menu(key.code, target, column, row, selected),
             View::ConfirmDelete(target) => self.handle_delete_confirmation(key.code, target),
         }
     }
@@ -492,6 +519,15 @@ impl Picker {
         if let View::ConfirmDelete(target) = self.view.clone() {
             return self.handle_delete_confirmation_mouse(mouse, area, target);
         }
+        if let View::ContextMenu {
+            target,
+            column,
+            row,
+            selected,
+        } = self.view.clone()
+        {
+            return self.handle_context_menu_mouse(mouse, area, target, column, row, selected);
+        }
 
         let layout = UiLayout::new(area);
         match mouse.kind {
@@ -518,6 +554,110 @@ impl Picker {
             KeyCode::Enter | KeyCode::Char('y') => Self::delete_intent(target),
             _ => Intent::None,
         }
+    }
+
+    fn handle_context_menu(
+        &mut self,
+        key: KeyCode,
+        target: DeleteTarget,
+        column: u16,
+        row: u16,
+        mut selected: usize,
+    ) -> Intent {
+        match key {
+            KeyCode::Esc => {
+                self.view = View::Browser;
+                Intent::None
+            }
+            KeyCode::Up | KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('k') => {
+                selected = 1 - selected;
+                self.view = View::ContextMenu {
+                    target,
+                    column,
+                    row,
+                    selected,
+                };
+                Intent::None
+            }
+            KeyCode::Enter if selected == 0 => {
+                self.view = View::Browser;
+                Self::pin_intent(target)
+            }
+            KeyCode::Enter => {
+                self.open_delete_confirmation(target);
+                Intent::None
+            }
+            _ => Intent::None,
+        }
+    }
+
+    fn handle_context_menu_mouse(
+        &mut self,
+        mouse: MouseEvent,
+        area: Rect,
+        target: DeleteTarget,
+        column: u16,
+        row: u16,
+        selected: usize,
+    ) -> Intent {
+        let layout = ContextMenuLayout::new(area, column, row);
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) if contains(layout.pin, mouse) => {
+                self.view = View::Browser;
+                Self::pin_intent(target)
+            }
+            MouseEventKind::Down(MouseButton::Left) if contains(layout.remove, mouse) => {
+                self.open_delete_confirmation(target);
+                Intent::None
+            }
+            MouseEventKind::Down(MouseButton::Left) => {
+                self.view = View::Browser;
+                Intent::None
+            }
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                self.view = View::ContextMenu {
+                    target,
+                    column,
+                    row,
+                    selected: 1 - selected,
+                };
+                Intent::None
+            }
+            MouseEventKind::Down(MouseButton::Right) => {
+                self.view = View::Browser;
+                self.handle_right_click(mouse, UiLayout::new(area))
+            }
+            _ => Intent::None,
+        }
+    }
+
+    fn pin_intent(target: DeleteTarget) -> Intent {
+        match target {
+            DeleteTarget::Project { project_id, .. } => Intent::ToggleProjectPin { project_id },
+            DeleteTarget::Session {
+                project_id,
+                session_name,
+                ..
+            } => Intent::ToggleSessionPin {
+                project_id,
+                session_name,
+            },
+        }
+    }
+
+    fn open_delete_confirmation(&mut self, target: DeleteTarget) {
+        if let DeleteTarget::Project { project_id, .. } = &target
+            && self
+                .state
+                .sessions
+                .iter()
+                .any(|session| &session.project_id == project_id)
+        {
+            self.view = View::Browser;
+            self.error = Some("Delete its sessions first, then delete the project.".into());
+            return;
+        }
+        self.view = View::ConfirmDelete(target);
     }
 
     fn handle_delete_confirmation_mouse(
@@ -757,15 +897,6 @@ impl Picker {
                 Intent::None
             };
         }
-        if contains(layout.focus_agent, mouse)
-            && let Some(session_name) = self.displayed_session_name(&project_id)
-        {
-            self.last_click = None;
-            return Intent::ActivateSession {
-                project_id,
-                session_name,
-            };
-        }
         self.last_click = None;
         Intent::None
     }
@@ -782,14 +913,23 @@ impl Picker {
             let Some(index) = projects.get(position).copied() else {
                 return Intent::None;
             };
-            let project = self.config.projects[index].clone();
-            let project_changed = self.active_project_id().as_deref() != Some(&project.id);
+            let project_id = self.config.projects[index].id.clone();
+            let project_name = self.config.projects[index].name.clone();
+            let project_changed = self.active_project_id().as_deref() != Some(&project_id);
             self.focused_pane = FocusedPane::Projects;
             self.project_selected = position + 1;
             if project_changed {
                 self.reset_session_cursor();
             }
-            self.confirm_project_delete(project);
+            self.view = View::ContextMenu {
+                target: DeleteTarget::Project {
+                    project_id,
+                    project_name,
+                },
+                column: mouse.column,
+                row: mouse.row,
+                selected: 0,
+            };
             return Intent::None;
         }
 
@@ -808,11 +948,16 @@ impl Picker {
             let session = &self.state.sessions[index];
             self.focused_pane = FocusedPane::Sessions;
             self.session_selected = position + 1;
-            self.view = View::ConfirmDelete(DeleteTarget::Session {
-                project_id,
-                session_name: session.name.clone(),
-                mode: session.mode,
-            });
+            self.view = View::ContextMenu {
+                target: DeleteTarget::Session {
+                    project_id,
+                    session_name: session.name.clone(),
+                    mode: session.mode,
+                },
+                column: mouse.column,
+                row: mouse.row,
+                selected: 0,
+            };
         }
         Intent::None
     }
@@ -848,6 +993,14 @@ impl Picker {
             | View::ConfirmDelete(DeleteTarget::Session { project_id, .. }) => {
                 Some(project_id.clone())
             }
+            View::ContextMenu {
+                target: DeleteTarget::Project { project_id, .. },
+                ..
+            }
+            | View::ContextMenu {
+                target: DeleteTarget::Session { project_id, .. },
+                ..
+            } => Some(project_id.clone()),
             View::Browser | View::AddProject(_) => self
                 .project_selected
                 .checked_sub(1)
@@ -856,6 +1009,7 @@ impl Picker {
         }
     }
 
+    #[cfg(test)]
     fn displayed_session_name(&self, project_id: &str) -> Option<String> {
         let sessions = self.filtered_session_indices(project_id);
         let position = self.displayed_session_position(!sessions.is_empty())?;
@@ -866,8 +1020,10 @@ impl Picker {
 
     fn displayed_session_position(&self, has_sessions: bool) -> Option<usize> {
         match (&self.view, self.focused_pane) {
-            (View::Browser, FocusedPane::Sessions) => self.session_selected.checked_sub(1),
-            (View::Browser, FocusedPane::Projects) => Some(0),
+            (View::Browser | View::ContextMenu { .. }, FocusedPane::Sessions) => {
+                self.session_selected.checked_sub(1)
+            }
+            (View::Browser | View::ContextMenu { .. }, FocusedPane::Projects) => Some(0),
             (View::AddProject(_) | View::NewSession { .. } | View::ConfirmDelete(_), _) => None,
         }
         .filter(|_| has_sessions)
@@ -879,10 +1035,9 @@ impl Picker {
         self.focused_pane = FocusedPane::Projects;
         self.project_filter.clear();
         self.project_selected = self
-            .config
-            .projects
+            .filtered_project_indices()
             .iter()
-            .position(|project| project.id == project_id)
+            .position(|index| self.config.projects[*index].id == project_id)
             .map(|position| position + 1)
             .unwrap_or(0);
         self.reset_session_cursor();
@@ -909,6 +1064,32 @@ impl Picker {
             .unwrap_or(0);
         self.session_selected = self.session_selected.min(session_count);
         self.session_offset = self.session_offset.min(self.session_selected);
+    }
+
+    fn project_pin_toggled(&mut self, config: Config, project_id: &str) {
+        self.config = config;
+        self.view = View::Browser;
+        self.focused_pane = FocusedPane::Projects;
+        self.project_selected = self
+            .filtered_project_indices()
+            .iter()
+            .position(|index| self.config.projects[*index].id == project_id)
+            .map(|position| position + 1)
+            .unwrap_or(0);
+        self.reset_session_cursor();
+    }
+
+    fn session_pin_toggled(&mut self, config: Config, project_id: &str, session_name: &str) {
+        self.config = config;
+        self.view = View::Browser;
+        self.focused_pane = FocusedPane::Sessions;
+        self.session_selected = self
+            .filtered_session_indices(project_id)
+            .iter()
+            .position(|index| self.state.sessions[*index].name == session_name)
+            .map(|position| position + 1)
+            .unwrap_or(0);
+        self.session_offset = 0;
     }
 
     fn handle_projects(&mut self, key: KeyCode) -> Intent {
@@ -1166,16 +1347,7 @@ impl Picker {
     }
 
     fn confirm_project_delete(&mut self, project: Project) {
-        if self
-            .state
-            .sessions
-            .iter()
-            .any(|session| session.project_id == project.id)
-        {
-            self.error = Some("Delete its sessions first, then delete the project.".into());
-            return;
-        }
-        self.view = View::ConfirmDelete(DeleteTarget::Project {
+        self.open_delete_confirmation(DeleteTarget::Project {
             project_id: project.id,
             project_name: project.name,
         });
@@ -1245,13 +1417,20 @@ impl Picker {
                 .active_project_id()
                 .map(|project_id| self.filtered_session_indices(&project_id).len() + 1)
                 .unwrap_or(0),
-            (View::AddProject(_) | View::NewSession { .. } | View::ConfirmDelete(_), _) => 1,
+            (
+                View::AddProject(_)
+                | View::NewSession { .. }
+                | View::ContextMenu { .. }
+                | View::ConfirmDelete(_),
+                _,
+            ) => 1,
         }
     }
 
     fn filtered_project_indices(&self) -> Vec<usize> {
         let filter = self.project_filter.to_lowercase();
-        self.config
+        let mut projects = self
+            .config
             .projects
             .iter()
             .enumerate()
@@ -1265,7 +1444,14 @@ impl Picker {
                         .contains(&filter)
             })
             .map(|(index, _)| index)
-            .collect()
+            .collect::<Vec<_>>();
+        projects.sort_by_key(|index| {
+            !self
+                .config
+                .pins
+                .project_is_pinned(&self.config.projects[*index].id)
+        });
+        projects
     }
 
     fn filtered_session_indices(&self, project_id: &str) -> Vec<usize> {
@@ -1281,8 +1467,16 @@ impl Picker {
             })
             .map(|(index, _)| index)
             .collect::<Vec<_>>();
-        sessions
-            .sort_by_key(|index| std::cmp::Reverse(self.state.sessions[*index].last_used_at_ms));
+        sessions.sort_by_key(|index| {
+            let session = &self.state.sessions[*index];
+            (
+                !self
+                    .config
+                    .pins
+                    .session_is_pinned(&session.project_id, &session.name),
+                std::cmp::Reverse(session.last_used_at_ms),
+            )
+        });
         sessions
     }
 
@@ -1301,6 +1495,15 @@ impl Picker {
             View::AddProject(draft) => {
                 self.draw_browser(frame);
                 self.draw_add_project(frame, frame.area(), &draft);
+            }
+            View::ContextMenu {
+                target,
+                column,
+                row,
+                selected,
+            } => {
+                self.draw_browser(frame);
+                self.draw_context_menu(frame, &target, column, row, selected);
             }
             View::ConfirmDelete(target) => {
                 self.draw_browser(frame);
@@ -1391,6 +1594,7 @@ impl Picker {
         let filtered = self.filtered_project_indices();
         let rows = filtered.iter().map(|index| {
             let project = &self.config.projects[*index];
+            let pinned = self.config.pins.project_is_pinned(&project.id);
             let session_count = self
                 .state
                 .sessions
@@ -1398,12 +1602,18 @@ impl Picker {
                 .filter(|session| session.project_id == project.id)
                 .count();
             Row::new(vec![
-                Cell::from(Span::styled(
-                    project.name.clone(),
-                    Style::default()
-                        .fg(theme.primary_text)
-                        .add_modifier(Modifier::BOLD),
-                )),
+                Cell::from(Line::from(vec![
+                    Span::styled(
+                        if pinned { "◆ " } else { "  " },
+                        Style::default().fg(theme.accent),
+                    ),
+                    Span::styled(
+                        project.name.clone(),
+                        Style::default()
+                            .fg(theme.primary_text)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                ])),
                 Cell::from(Span::styled(
                     project.agent.clone(),
                     Style::default().fg(theme.secondary_text),
@@ -1532,17 +1742,27 @@ impl Picker {
                     .style(Style::default().fg(theme.muted_text)),
                 layout.session_rows,
             );
-            self.draw_details(frame, layout, None, None);
             return;
         };
         let session_indices = self.filtered_session_indices(project_id);
         let rows = session_indices.iter().map(|index| {
             let session = &self.state.sessions[*index];
+            let pinned = self
+                .config
+                .pins
+                .session_is_pinned(&session.project_id, &session.name);
             let status = self.session_status(session);
             let (symbol, label, color) = status_presentation(theme, &status);
             Row::new(vec![
                 Cell::from(Line::from(vec![
-                    Span::styled("⑂  ", Style::default().fg(theme.secondary_text)),
+                    Span::styled(
+                        if pinned { "◆  " } else { "⑂  " },
+                        Style::default().fg(if pinned {
+                            theme.accent
+                        } else {
+                            theme.secondary_text
+                        }),
+                    ),
                     Span::styled(
                         session.name.clone(),
                         Style::default()
@@ -1584,73 +1804,58 @@ impl Picker {
             .with_offset(self.session_offset);
         frame.render_stateful_widget(table, layout.session_rows, &mut state);
         self.session_offset = state.offset();
-
-        let session = selected
-            .and_then(|position| session_indices.get(position))
-            .map(|index| &self.state.sessions[*index]);
-        self.draw_details(frame, layout, project, session);
     }
 
-    fn draw_details(
+    fn draw_context_menu(
         &self,
         frame: &mut Frame,
-        layout: UiLayout,
-        project: Option<&Project>,
-        session: Option<&Session>,
+        target: &DeleteTarget,
+        column: u16,
+        row: u16,
+        selected: usize,
     ) {
         let theme = self.theme;
+        let layout = ContextMenuLayout::new(frame.area(), column, row);
+        let pinned = match target {
+            DeleteTarget::Project { project_id, .. } => {
+                self.config.pins.project_is_pinned(project_id)
+            }
+            DeleteTarget::Session {
+                project_id,
+                session_name,
+                ..
+            } => self.config.pins.session_is_pinned(project_id, session_name),
+        };
+        frame.render_widget(Clear, layout.popup);
         frame.render_widget(
-            Block::new()
-                .borders(Borders::TOP)
-                .border_style(Style::default().fg(theme.divider))
+            Block::bordered()
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(theme.border))
                 .style(Style::default().bg(theme.panel)),
-            layout.detail,
+            layout.popup,
         );
-        let detail_inner = Block::new().borders(Borders::TOP).inner(layout.detail);
-        let Some(session) = session else {
-            frame.render_widget(
-                Paragraph::new("Select a session to inspect it")
-                    .style(Style::default().fg(theme.muted_text)),
-                detail_inner,
-            );
-            return;
-        };
-        let agent = project.map(|project| project.agent.as_str()).unwrap_or("—");
-        let mode = match session.mode {
-            SessionMode::Local => "local",
-            SessionMode::Worktree => "worktree",
-        };
-        let lines = vec![
-            Line::from(Span::styled(
-                session.name.clone(),
-                Style::default()
-                    .fg(theme.accent)
-                    .add_modifier(Modifier::BOLD),
-            )),
-            Line::from(""),
-            detail_line(theme, "Agent", agent),
-            detail_line(theme, "Mode", mode),
-            detail_line(theme, "Path", &session.worktree_path.to_string_lossy()),
-        ];
-        frame.render_widget(Paragraph::new(lines), detail_inner);
-        frame.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled(
-                    " Enter ",
-                    Style::default()
-                        .fg(theme.accent)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled("  Focus agent", Style::default().fg(theme.secondary_text)),
-            ]))
-            .block(
-                Block::bordered()
-                    .border_type(BorderType::Rounded)
-                    .border_style(Style::default().fg(theme.accent))
-                    .style(Style::default().bg(theme.panel)),
+        for (index, (area, label, color)) in [
+            (
+                layout.pin,
+                if pinned { "Unpin" } else { "Pin" },
+                theme.primary_text,
             ),
-            layout.focus_agent,
-        );
+            (layout.remove, "Remove", theme.danger),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            frame.render_widget(
+                Paragraph::new(format!("  {label}")).style(Style::default().fg(color).bg(
+                    if selected == index {
+                        theme.selected_surface
+                    } else {
+                        theme.panel
+                    },
+                )),
+                area,
+            );
+        }
     }
 
     fn draw_new_session(
@@ -2045,18 +2250,6 @@ fn table_row_at(rect: Rect, mouse: MouseEvent, offset: usize) -> Option<usize> {
     (relative_row < fully_rendered_height).then(|| offset + usize::from(relative_row / ROW_HEIGHT))
 }
 
-fn detail_line(theme: Theme, label: &str, value: &str) -> Line<'static> {
-    Line::from(vec![
-        Span::styled(
-            format!("{label:<8}"),
-            Style::default()
-                .fg(theme.accent)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(value.to_owned(), Style::default().fg(theme.secondary_text)),
-    ])
-}
-
 fn status_presentation(theme: Theme, status: &str) -> (&'static str, String, Color) {
     match status {
         "working" => ("●", "WORKING".into(), theme.working),
@@ -2298,10 +2491,42 @@ fn run_loop(
                 });
                 picker.state = store.load_state()?;
                 match result {
-                    Ok(()) => picker.session_deleted(),
+                    Ok(()) => {
+                        picker.session_deleted();
+                        match store.update_config(|config, _state| {
+                            config.pins.remove_session(&project_id, &session_name);
+                            Ok(())
+                        }) {
+                            Ok((config, ())) => picker.config = config,
+                            Err(error) => {
+                                picker.error = Some(format!(
+                                    "Session removed, but its pin could not be cleaned up: {error:#}"
+                                ));
+                            }
+                        }
+                    }
                     Err(error) => picker.error = Some(format!("{error:#}")),
                 }
             }
+            Intent::ToggleProjectPin { project_id } => {
+                match store.update_config(|config, _state| {
+                    config.pins.toggle_project(&project_id);
+                    Ok(())
+                }) {
+                    Ok((config, ())) => picker.project_pin_toggled(config, &project_id),
+                    Err(error) => picker.error = Some(format!("{error:#}")),
+                }
+            }
+            Intent::ToggleSessionPin {
+                project_id,
+                session_name,
+            } => match store.update_config(|config, _state| {
+                config.pins.toggle_session(&project_id, &session_name);
+                Ok(())
+            }) {
+                Ok((config, ())) => picker.session_pin_toggled(config, &project_id, &session_name),
+                Err(error) => picker.error = Some(format!("{error:#}")),
+            },
         }
     }
 }
@@ -2340,6 +2565,7 @@ mod tests {
             Config {
                 version: 1,
                 ui: Default::default(),
+                pins: Default::default(),
                 projects: vec![Project {
                     id: "demo".into(),
                     name: "Demo".into(),
@@ -2518,7 +2744,7 @@ mod tests {
     }
 
     #[test]
-    fn right_clicking_a_session_opens_its_delete_confirmation() {
+    fn right_clicking_a_session_opens_its_context_menu() {
         let mut picker = picker_with_session();
         picker.handle_key(key(KeyCode::Enter));
         let area = Rect::new(0, 0, 120, 36);
@@ -2540,13 +2766,74 @@ mod tests {
         );
         assert!(matches!(
             picker.view,
+            View::ContextMenu {
+                target: DeleteTarget::Session { ref session_name, .. },
+                selected: 0,
+                ..
+            }
+                if session_name == "feat/one"
+        ));
+
+        let backend = TestBackend::new(area.width, area.height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| picker.draw(frame)).unwrap();
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("Pin"));
+        assert!(rendered.contains("Remove"));
+
+        assert_eq!(
+            picker.handle_key(key(KeyCode::Enter)),
+            Intent::ToggleSessionPin {
+                project_id: "demo".into(),
+                session_name: "feat/one".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn context_menu_actions_can_be_clicked() {
+        let mut picker = picker_with_session();
+        picker.handle_key(key(KeyCode::Enter));
+        let area = Rect::new(0, 0, 120, 36);
+        let layout = UiLayout::new(area);
+        let first_session_row = Rect::new(
+            layout.session_rows.x,
+            layout.session_rows.y,
+            layout.session_rows.width,
+            ROW_HEIGHT,
+        );
+        let click = right_click(first_session_row);
+        picker.handle_mouse_at(click, area, std::time::Instant::now());
+        let menu = ContextMenuLayout::new(area, click.column, click.row);
+
+        assert_eq!(
+            picker.handle_mouse_at(left_click(menu.pin), area, std::time::Instant::now()),
+            Intent::ToggleSessionPin {
+                project_id: "demo".into(),
+                session_name: "feat/one".into(),
+            }
+        );
+
+        picker.handle_mouse_at(click, area, std::time::Instant::now());
+        assert_eq!(
+            picker.handle_mouse_at(left_click(menu.remove), area, std::time::Instant::now()),
+            Intent::None
+        );
+        assert!(matches!(
+            picker.view,
             View::ConfirmDelete(DeleteTarget::Session { ref session_name, .. })
                 if session_name == "feat/one"
         ));
     }
 
     #[test]
-    fn right_clicking_a_project_opens_its_delete_confirmation() {
+    fn right_clicking_a_project_opens_its_context_menu() {
         let mut picker = picker();
         let area = Rect::new(0, 0, 120, 36);
         let layout = UiLayout::new(area);
@@ -2567,9 +2854,53 @@ mod tests {
         );
         assert!(matches!(
             picker.view,
+            View::ContextMenu {
+                target: DeleteTarget::Project { ref project_id, .. },
+                selected: 0,
+                ..
+            }
+                if project_id == "demo"
+        ));
+
+        assert_eq!(picker.handle_key(key(KeyCode::Down)), Intent::None);
+        assert_eq!(picker.handle_key(key(KeyCode::Enter)), Intent::None);
+        assert!(matches!(
+            picker.view,
             View::ConfirmDelete(DeleteTarget::Project { ref project_id, .. })
                 if project_id == "demo"
         ));
+    }
+
+    #[test]
+    fn pinned_projects_and_sessions_sort_before_unpinned_items() {
+        let mut picker = picker_with_session();
+        picker.config.projects.push(Project {
+            id: "other".into(),
+            name: "Other".into(),
+            path: PathBuf::from("/repos/other"),
+            agent: "pi".into(),
+            base_branch: "main".into(),
+            agent_args: Vec::new(),
+        });
+        picker.state.sessions.push(Session {
+            project_id: "demo".into(),
+            name: "older-pinned".into(),
+            mode: SessionMode::Local,
+            worktree_path: PathBuf::from("/repos/demo"),
+            pending_temporary_branch: None,
+            created_at_ms: 0,
+            last_used_at_ms: 0,
+            agent_session: None,
+            tab_id: None,
+            tab_namespace: None,
+        });
+        picker.config.pins.toggle_project("other");
+        picker.config.pins.toggle_session("demo", "older-pinned");
+
+        let projects = picker.filtered_project_indices();
+        assert_eq!(picker.config.projects[projects[0]].id, "other");
+        let sessions = picker.filtered_session_indices("demo");
+        assert_eq!(picker.state.sessions[sessions[0]].name, "older-pinned");
     }
 
     #[test]
@@ -3069,6 +3400,7 @@ mod tests {
         let mut config = Config {
             version: 1,
             ui: Default::default(),
+            pins: Default::default(),
             projects: vec![Project {
                 id: "missing".into(),
                 name: "Missing".into(),
@@ -3108,6 +3440,7 @@ mod tests {
         let mut config = Config {
             version: 1,
             ui: Default::default(),
+            pins: Default::default(),
             projects: vec![Project {
                 id: "unborn-saved".into(),
                 name: "Unborn saved".into(),
@@ -3396,7 +3729,7 @@ mod tests {
     }
 
     #[test]
-    fn browser_draws_projects_sessions_and_details_without_global_bars() {
+    fn browser_draws_only_project_and_session_lists_without_global_bars() {
         let mut picker = picker_with_session();
         let backend = TestBackend::new(120, 36);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -3415,6 +3748,10 @@ mod tests {
         assert!(rendered.contains("feat/one"));
         assert!(!rendered.contains("Switchyard"));
         assert!(!rendered.contains("↑/k"));
+        assert!(!rendered.contains("Agent"));
+        assert!(!rendered.contains("Mode"));
+        assert!(!rendered.contains("Path"));
+        assert!(!rendered.contains("Focus agent"));
     }
 
     #[test]

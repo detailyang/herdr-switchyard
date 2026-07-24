@@ -138,6 +138,7 @@ impl Store {
             if config.projects.len() == previous_len {
                 bail!("project {project_id:?} is no longer configured");
             }
+            config.pins.remove_project(project_id);
             Ok(())
         })
         .map(|(config, ())| config)

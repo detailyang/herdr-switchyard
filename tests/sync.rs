@@ -153,6 +153,7 @@ fn concurrent_hooks_cannot_commit_an_older_snapshot_last() {
         .save_config(&Config {
             version: 1,
             ui: Default::default(),
+            pins: Default::default(),
             projects: vec![project()],
         })
         .unwrap();

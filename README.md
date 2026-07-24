@@ -68,9 +68,10 @@ for the same project and each receives its own agent tab.
 
 The picker supports both keyboard and mouse input. Click a project or session to
 select it, double-click a session to open it, use the mouse wheel to move through
-either list, and click **Add project**, **New session**, or **Focus agent** to run
-that action. Press `Delete` or `Backspace` on a selected project or session, or
-right-click its row, to open a deletion confirmation. Removing a project only
+either list, and click **Add project** or **New session** to run that action.
+Right-click a project or session for a small menu that can pin it to the top of
+its list or remove it. Press `Delete` or `Backspace` on a selected project or
+session to open the same removal confirmation directly. Removing a project only
 unregisters it from Switchyard and requires its sessions to be removed first;
 the project directory is never deleted. Removing a worktree session deletes its
 worktree and registry entry; dirty worktrees and detached commits that are not

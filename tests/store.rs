@@ -39,9 +39,10 @@ fn sessions_without_a_mode_migrate_to_worktree_mode() {
 fn project_config_and_session_state_round_trip_in_separate_files() {
     let root = tempdir().unwrap();
     let store = Store::new(root.path().join("config"), root.path().join("state"));
-    let config = Config {
+    let mut config = Config {
         version: 1,
         ui: Default::default(),
+        pins: Default::default(),
         projects: vec![Project {
             id: "demo".into(),
             name: "Demo".into(),
@@ -51,6 +52,8 @@ fn project_config_and_session_state_round_trip_in_separate_files() {
             agent_args: Vec::new(),
         }],
     };
+    config.pins.toggle_project("demo");
+    config.pins.toggle_session("demo", "feat/one");
 
     store.save_config(&config).unwrap();
     store
@@ -94,6 +97,7 @@ fn project_updates_reject_a_project_removed_under_the_state_lock() {
     let config = Config {
         version: 1,
         ui: Default::default(),
+        pins: Default::default(),
         projects: vec![Project {
             id: "demo".into(),
             name: "Demo".into(),
@@ -158,6 +162,7 @@ fn project_removal_is_blocked_by_sessions_under_the_same_state_lock() {
     let config = Config {
         version: 1,
         ui: Default::default(),
+        pins: Default::default(),
         projects: vec![Project {
             id: "demo".into(),
             name: "Demo".into(),
@@ -242,6 +247,7 @@ fn unsupported_project_agents_are_rejected() {
     let config = Config {
         version: 1,
         ui: Default::default(),
+        pins: Default::default(),
         projects: vec![Project {
             id: "demo".into(),
             name: "Demo".into(),
@@ -268,6 +274,8 @@ fn configs_without_ui_settings_use_the_existing_dark_theme() {
     let config = store.load_config().unwrap();
 
     assert_eq!(config.ui.theme, ThemeName::JadeDark);
+    assert!(config.pins.projects.is_empty());
+    assert!(config.pins.sessions.is_empty());
 }
 
 #[test]
@@ -283,6 +291,7 @@ fn light_and_dark_theme_names_round_trip_through_plugin_config() {
         let config = Config {
             version: 1,
             ui: UiConfig { theme },
+            pins: Default::default(),
             projects: Vec::new(),
         };
 

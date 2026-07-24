@@ -15,6 +15,8 @@ pub struct Config {
     #[serde(default)]
     pub ui: UiConfig,
     #[serde(default)]
+    pub pins: PinConfig,
+    #[serde(default)]
     pub projects: Vec<Project>,
 }
 
@@ -23,9 +25,69 @@ impl Default for Config {
         Self {
             version: 1,
             ui: UiConfig::default(),
+            pins: PinConfig::default(),
             projects: Vec::new(),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct PinConfig {
+    #[serde(default)]
+    pub projects: Vec<String>,
+    #[serde(default)]
+    pub sessions: Vec<PinnedSession>,
+}
+
+impl PinConfig {
+    pub fn project_is_pinned(&self, project_id: &str) -> bool {
+        self.projects.iter().any(|id| id == project_id)
+    }
+
+    pub fn session_is_pinned(&self, project_id: &str, session_name: &str) -> bool {
+        self.sessions
+            .iter()
+            .any(|session| session.project_id == project_id && session.session_name == session_name)
+    }
+
+    pub fn toggle_project(&mut self, project_id: &str) {
+        if self.project_is_pinned(project_id) {
+            self.projects.retain(|id| id != project_id);
+        } else {
+            self.projects.push(project_id.to_owned());
+        }
+    }
+
+    pub fn toggle_session(&mut self, project_id: &str, session_name: &str) {
+        if self.session_is_pinned(project_id, session_name) {
+            self.sessions.retain(|session| {
+                session.project_id != project_id || session.session_name != session_name
+            });
+        } else {
+            self.sessions.push(PinnedSession {
+                project_id: project_id.to_owned(),
+                session_name: session_name.to_owned(),
+            });
+        }
+    }
+
+    pub fn remove_project(&mut self, project_id: &str) {
+        self.projects.retain(|id| id != project_id);
+        self.sessions
+            .retain(|session| session.project_id != project_id);
+    }
+
+    pub fn remove_session(&mut self, project_id: &str, session_name: &str) {
+        self.sessions.retain(|session| {
+            session.project_id != project_id || session.session_name != session_name
+        });
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PinnedSession {
+    pub project_id: String,
+    pub session_name: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
