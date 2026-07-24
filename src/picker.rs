@@ -134,15 +134,15 @@ impl NewSessionLayout {
             Constraint::Length(7),
             Constraint::Length(13),
             Constraint::Length(9),
-            Constraint::Min(0),
         ])
+        .flex(Flex::Center)
         .split(rows[1]);
         let actions = Layout::horizontal([
             Constraint::Length(14),
             Constraint::Length(1),
             Constraint::Length(14),
-            Constraint::Min(0),
         ])
+        .flex(Flex::Center)
         .split(rows[3]);
         Self {
             popup,
@@ -1671,6 +1671,7 @@ impl Picker {
                     .fg(theme.accent)
                     .add_modifier(Modifier::BOLD),
             ))
+            .title_alignment(Alignment::Center)
             .border_style(Style::default().fg(theme.accent))
             .style(Style::default().bg(theme.panel).fg(theme.primary_text));
         frame.render_widget(block, layout.popup);
@@ -1684,11 +1685,13 @@ impl Picker {
                     Line::from("Uses the project directory directly."),
                     Line::from("Sessions share files but use separate agent tabs."),
                 ],
-            }),
+            })
+            .alignment(Alignment::Center),
             layout.description,
         );
         frame.render_widget(
-            Paragraph::new(Span::styled("Mode", Style::default().fg(theme.muted_text))),
+            Paragraph::new(Span::styled("Mode", Style::default().fg(theme.muted_text)))
+                .alignment(Alignment::Center),
             Rect::new(
                 layout.mode_worktree.x.saturating_sub(7),
                 layout.mode_worktree.y,
@@ -1717,7 +1720,8 @@ impl Picker {
                         .fg(theme.accent)
                         .add_modifier(Modifier::BOLD),
                 ),
-            ])),
+            ]))
+            .alignment(Alignment::Center),
             layout.title,
         );
         let create_style = if input.trim().is_empty() {
@@ -1728,15 +1732,19 @@ impl Picker {
                 .add_modifier(Modifier::BOLD)
         };
         frame.render_widget(
-            Paragraph::new(" Create ").style(create_style).block(
-                Block::bordered()
-                    .border_type(BorderType::Rounded)
-                    .border_style(create_style),
-            ),
+            Paragraph::new(" Create ")
+                .alignment(Alignment::Center)
+                .style(create_style)
+                .block(
+                    Block::bordered()
+                        .border_type(BorderType::Rounded)
+                        .border_style(create_style),
+                ),
             layout.create,
         );
         frame.render_widget(
             Paragraph::new(" Cancel ")
+                .alignment(Alignment::Center)
                 .style(Style::default().fg(theme.secondary_text))
                 .block(
                     Block::bordered()
@@ -1761,7 +1769,12 @@ impl Picker {
         } else {
             format!(" {label} ")
         };
-        frame.render_widget(Paragraph::new(label).style(style), area);
+        frame.render_widget(
+            Paragraph::new(label)
+                .alignment(Alignment::Center)
+                .style(style),
+            area,
+        );
     }
 
     fn draw_delete_confirmation(&self, frame: &mut Frame, area: Rect, target: &DeleteTarget) {
@@ -2590,10 +2603,30 @@ mod tests {
         assert_eq!(layout.popup.height, 13);
         assert_eq!(layout.popup.x, 28);
         assert_eq!(layout.popup.y, 12);
+        let inner = Block::bordered().inner(layout.popup);
+        let mode_left = layout.mode_worktree.x.saturating_sub(7) - inner.x;
+        let mode_right = inner.right() - layout.mode_local.right();
+        let action_left = layout.create.x - inner.x;
+        let action_right = inner.right() - layout.cancel.right();
+        assert!(mode_left.abs_diff(mode_right) <= 1);
+        assert!(action_left.abs_diff(action_right) <= 1);
 
         let backend = TestBackend::new(area.width, area.height);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|frame| picker.draw(frame)).unwrap();
+        let buffer = terminal.backend().buffer();
+        for row in [layout.description.y, layout.title.y] {
+            let start = (row * area.width + inner.x) as usize;
+            let end = start + inner.width as usize;
+            let line = buffer.content()[start..end]
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>();
+            let content = line.trim();
+            let left = line.find(content).unwrap();
+            let right = line.len() - left - content.len();
+            assert!(left.abs_diff(right) <= 1);
+        }
         let rendered = terminal
             .backend()
             .buffer()
