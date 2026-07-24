@@ -18,7 +18,7 @@ use crossterm::{
 use ratatui::{
     Frame, Terminal,
     backend::CrosstermBackend,
-    layout::{Alignment, Constraint, Layout, Margin, Rect},
+    layout::{Alignment, Constraint, Flex, Layout, Margin, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{
@@ -32,7 +32,7 @@ use crate::{
         Herdr, activate_existing, agent_name, create_session, delete_session, sync_agent_sessions,
     },
     herdr::CliHerdr,
-    model::{Config, DEFAULT_BASE_BRANCH, Project, RuntimeSnapshot, Session, State},
+    model::{Config, DEFAULT_BASE_BRANCH, Project, RuntimeSnapshot, Session, SessionMode, State},
     paths::same_path,
     repository::{normalize_project, repair_base_branch},
     store::Store,
@@ -68,7 +68,10 @@ struct AddProjectLayout {
 #[derive(Debug, Clone, Copy)]
 struct NewSessionLayout {
     popup: Rect,
-    body: Rect,
+    description: Rect,
+    mode_worktree: Rect,
+    mode_local: Rect,
+    title: Rect,
     create: Rect,
     cancel: Rect,
 }
@@ -112,25 +115,41 @@ impl DeleteConfirmationLayout {
 impl NewSessionLayout {
     fn new(area: Rect) -> Self {
         let width = area.width.saturating_sub(4).clamp(1, 64);
-        let height = area.height.saturating_sub(4).clamp(1, 11);
-        let popup = Rect::new(
-            area.x + area.width.saturating_sub(width) / 2,
-            area.y + area.height.saturating_sub(height) / 2,
-            width,
-            height,
-        );
+        let height = area.height.saturating_sub(4).clamp(1, 13);
+        let [centered_row] = Layout::vertical([Constraint::Length(height)])
+            .flex(Flex::Center)
+            .areas(area);
+        let [popup] = Layout::horizontal([Constraint::Length(width)])
+            .flex(Flex::Center)
+            .areas(centered_row);
         let inner = Block::bordered().inner(popup);
-        let rows = Layout::vertical([Constraint::Min(1), Constraint::Length(3)]).split(inner);
+        let rows = Layout::vertical([
+            Constraint::Length(3),
+            Constraint::Length(2),
+            Constraint::Length(3),
+            Constraint::Length(3),
+        ])
+        .split(inner);
+        let modes = Layout::horizontal([
+            Constraint::Length(7),
+            Constraint::Length(13),
+            Constraint::Length(9),
+            Constraint::Min(0),
+        ])
+        .split(rows[1]);
         let actions = Layout::horizontal([
             Constraint::Length(14),
             Constraint::Length(1),
             Constraint::Length(14),
             Constraint::Min(0),
         ])
-        .split(rows[1]);
+        .split(rows[3]);
         Self {
             popup,
-            body: rows[0],
+            description: rows[0],
+            mode_worktree: modes[1],
+            mode_local: modes[2],
+            title: rows[2],
             create: actions[0],
             cancel: actions[2],
         }
@@ -248,6 +267,7 @@ pub enum Intent {
     CreateSession {
         project_id: String,
         session_name: String,
+        mode: SessionMode,
     },
     AddProject(Project),
     DeleteProject {
@@ -268,6 +288,7 @@ enum DeleteTarget {
     Session {
         project_id: String,
         session_name: String,
+        mode: SessionMode,
     },
 }
 
@@ -275,7 +296,11 @@ enum DeleteTarget {
 enum View {
     Browser,
     AddProject(ProjectDraft),
-    NewSession { project_id: String, input: String },
+    NewSession {
+        project_id: String,
+        input: String,
+        mode: SessionMode,
+    },
     ConfirmDelete(DeleteTarget),
 }
 
@@ -434,9 +459,11 @@ impl Picker {
                 FocusedPane::Projects => self.handle_projects(key.code),
                 FocusedPane::Sessions => self.handle_sessions(key.code),
             },
-            View::NewSession { project_id, input } => {
-                self.handle_new_session(key.code, project_id, input)
-            }
+            View::NewSession {
+                project_id,
+                input,
+                mode,
+            } => self.handle_new_session(key.code, project_id, input, mode),
             View::AddProject(draft) => self.handle_add_project(key.code, draft),
             View::ConfirmDelete(target) => self.handle_delete_confirmation(key.code, target),
         }
@@ -454,8 +481,13 @@ impl Picker {
         if matches!(self.view, View::AddProject(_)) {
             return self.handle_add_project_mouse(mouse, area, now);
         }
-        if let View::NewSession { project_id, input } = self.view.clone() {
-            return self.handle_new_session_mouse(mouse, area, project_id, input);
+        if let View::NewSession {
+            project_id,
+            input,
+            mode,
+        } = self.view.clone()
+        {
+            return self.handle_new_session_mouse(mouse, area, project_id, input, mode);
         }
         if let View::ConfirmDelete(target) = self.view.clone() {
             return self.handle_delete_confirmation_mouse(mouse, area, target);
@@ -514,6 +546,7 @@ impl Picker {
             DeleteTarget::Session {
                 project_id,
                 session_name,
+                ..
             } => Intent::DeleteSession {
                 project_id,
                 session_name,
@@ -527,11 +560,30 @@ impl Picker {
         area: Rect,
         project_id: String,
         input: String,
+        mut mode: SessionMode,
     ) -> Intent {
         if mouse.kind != MouseEventKind::Down(MouseButton::Left) {
             return Intent::None;
         }
         let layout = NewSessionLayout::new(area);
+        if contains(layout.mode_worktree, mouse) {
+            mode = SessionMode::Worktree;
+            self.view = View::NewSession {
+                project_id,
+                input,
+                mode,
+            };
+            return Intent::None;
+        }
+        if contains(layout.mode_local, mouse) {
+            mode = SessionMode::Local;
+            self.view = View::NewSession {
+                project_id,
+                input,
+                mode,
+            };
+            return Intent::None;
+        }
         if contains(layout.cancel, mouse) {
             self.view = View::Browser;
             self.focused_pane = FocusedPane::Sessions;
@@ -541,6 +593,7 @@ impl Picker {
             return Intent::CreateSession {
                 project_id,
                 session_name: input.trim().to_owned(),
+                mode,
             };
         }
         Intent::None
@@ -752,12 +805,13 @@ impl Picker {
             let Some(index) = sessions.get(position).copied() else {
                 return Intent::None;
             };
-            let session_name = self.state.sessions[index].name.clone();
+            let session = &self.state.sessions[index];
             self.focused_pane = FocusedPane::Sessions;
             self.session_selected = position + 1;
             self.view = View::ConfirmDelete(DeleteTarget::Session {
                 project_id,
-                session_name,
+                session_name: session.name.clone(),
+                mode: session.mode,
             });
         }
         Intent::None
@@ -950,6 +1004,7 @@ impl Picker {
         key: KeyCode,
         project_id: String,
         mut input: String,
+        mut mode: SessionMode,
     ) -> Intent {
         match key {
             KeyCode::Esc => {
@@ -959,17 +1014,38 @@ impl Picker {
             }
             KeyCode::Backspace => {
                 input.pop();
-                self.view = View::NewSession { project_id, input };
+                self.view = View::NewSession {
+                    project_id,
+                    input,
+                    mode,
+                };
+                Intent::None
+            }
+            KeyCode::Left | KeyCode::Right => {
+                mode = match mode {
+                    SessionMode::Local => SessionMode::Worktree,
+                    SessionMode::Worktree => SessionMode::Local,
+                };
+                self.view = View::NewSession {
+                    project_id,
+                    input,
+                    mode,
+                };
                 Intent::None
             }
             KeyCode::Char(character) => {
                 input.push(character);
-                self.view = View::NewSession { project_id, input };
+                self.view = View::NewSession {
+                    project_id,
+                    input,
+                    mode,
+                };
                 Intent::None
             }
             KeyCode::Enter if !input.trim().is_empty() => Intent::CreateSession {
                 project_id,
                 session_name: input.trim().to_owned(),
+                mode,
             },
             _ => Intent::None,
         }
@@ -1073,6 +1149,7 @@ impl Picker {
         self.view = View::NewSession {
             project_id: project_id.to_owned(),
             input: String::new(),
+            mode: SessionMode::Worktree,
         };
     }
 
@@ -1115,6 +1192,7 @@ impl Picker {
         self.view = View::ConfirmDelete(DeleteTarget::Session {
             project_id: project_id.to_owned(),
             session_name: self.state.sessions[index].name.clone(),
+            mode: self.state.sessions[index].mode,
         });
     }
 
@@ -1216,9 +1294,9 @@ impl Picker {
         );
         match self.view.clone() {
             View::Browser => self.draw_browser(frame),
-            View::NewSession { input, .. } => {
+            View::NewSession { input, mode, .. } => {
                 self.draw_browser(frame);
-                self.draw_new_session(frame, frame.area(), &input);
+                self.draw_new_session(frame, frame.area(), &input, mode);
             }
             View::AddProject(draft) => {
                 self.draw_browser(frame);
@@ -1538,6 +1616,10 @@ impl Picker {
             return;
         };
         let agent = project.map(|project| project.agent.as_str()).unwrap_or("—");
+        let mode = match session.mode {
+            SessionMode::Local => "local",
+            SessionMode::Worktree => "worktree",
+        };
         let lines = vec![
             Line::from(Span::styled(
                 session.name.clone(),
@@ -1547,6 +1629,7 @@ impl Picker {
             )),
             Line::from(""),
             detail_line(theme, "Agent", agent),
+            detail_line(theme, "Mode", mode),
             detail_line(theme, "Path", &session.worktree_path.to_string_lossy()),
         ];
         frame.render_widget(Paragraph::new(lines), detail_inner);
@@ -1570,7 +1653,13 @@ impl Picker {
         );
     }
 
-    fn draw_new_session(&self, frame: &mut Frame, area: ratatui::layout::Rect, input: &str) {
+    fn draw_new_session(
+        &self,
+        frame: &mut Frame,
+        area: ratatui::layout::Rect,
+        input: &str,
+        mode: SessionMode,
+    ) {
         let theme = self.theme;
         let layout = NewSessionLayout::new(area);
         frame.render_widget(Clear, layout.popup);
@@ -1586,21 +1675,50 @@ impl Picker {
             .style(Style::default().bg(theme.panel).fg(theme.primary_text));
         frame.render_widget(block, layout.popup);
         frame.render_widget(
-            Paragraph::new(vec![
-                Line::from("Creates an isolated detached worktree."),
-                Line::from("Starts in detached HEAD state."),
-                Line::from(""),
-                Line::from(vec![
-                    Span::styled("Title  ", Style::default().fg(theme.muted_text)),
-                    Span::styled(
-                        format!("{input}_"),
-                        Style::default()
-                            .fg(theme.accent)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                ]),
-            ]),
-            layout.body,
+            Paragraph::new(match mode {
+                SessionMode::Worktree => vec![
+                    Line::from("Creates an isolated detached worktree."),
+                    Line::from("Starts in detached HEAD state."),
+                ],
+                SessionMode::Local => vec![
+                    Line::from("Uses the project directory directly."),
+                    Line::from("Sessions share files but use separate agent tabs."),
+                ],
+            }),
+            layout.description,
+        );
+        frame.render_widget(
+            Paragraph::new(Span::styled("Mode", Style::default().fg(theme.muted_text))),
+            Rect::new(
+                layout.mode_worktree.x.saturating_sub(7),
+                layout.mode_worktree.y,
+                7,
+                layout.mode_worktree.height,
+            ),
+        );
+        self.draw_mode_option(
+            frame,
+            layout.mode_worktree,
+            "Worktree",
+            mode == SessionMode::Worktree,
+        );
+        self.draw_mode_option(
+            frame,
+            layout.mode_local,
+            "Local",
+            mode == SessionMode::Local,
+        );
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("Title  ", Style::default().fg(theme.muted_text)),
+                Span::styled(
+                    format!("{input}_"),
+                    Style::default()
+                        .fg(theme.accent)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ])),
+            layout.title,
         );
         let create_style = if input.trim().is_empty() {
             Style::default().fg(theme.muted_text)
@@ -1629,6 +1747,23 @@ impl Picker {
         );
     }
 
+    fn draw_mode_option(&self, frame: &mut Frame, area: Rect, label: &str, selected: bool) {
+        let theme = self.theme;
+        let style = if selected {
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.secondary_text)
+        };
+        let label = if selected {
+            format!("[{label}]")
+        } else {
+            format!(" {label} ")
+        };
+        frame.render_widget(Paragraph::new(label).style(style), area);
+    }
+
     fn draw_delete_confirmation(&self, frame: &mut Frame, area: Rect, target: &DeleteTarget) {
         let theme = self.theme;
         let layout = DeleteConfirmationLayout::new(area);
@@ -1647,20 +1782,36 @@ impl Picker {
                     Line::from("Project files stay untouched."),
                 ],
             ),
-            DeleteTarget::Session { session_name, .. } => (
+            DeleteTarget::Session {
+                session_name, mode, ..
+            } => (
                 " Delete session ",
-                vec![
-                    Line::from(Span::styled(
-                        session_name.clone(),
-                        Style::default()
-                            .fg(theme.primary_text)
-                            .add_modifier(Modifier::BOLD),
-                    )),
-                    Line::from(""),
-                    Line::from("Deletes its Git worktree and session record."),
-                    Line::from("Dirty files or unbranched commits prevent deletion."),
-                    Line::from("Open sessions must be closed first."),
-                ],
+                match mode {
+                    SessionMode::Worktree => vec![
+                        Line::from(Span::styled(
+                            session_name.clone(),
+                            Style::default()
+                                .fg(theme.primary_text)
+                                .add_modifier(Modifier::BOLD),
+                        )),
+                        Line::from(""),
+                        Line::from("Deletes its Git worktree and session record."),
+                        Line::from("Dirty files or unbranched commits prevent deletion."),
+                        Line::from("Open sessions must be closed first."),
+                    ],
+                    SessionMode::Local => vec![
+                        Line::from(Span::styled(
+                            session_name.clone(),
+                            Style::default()
+                                .fg(theme.primary_text)
+                                .add_modifier(Modifier::BOLD),
+                        )),
+                        Line::from(""),
+                        Line::from("Removes the session record only."),
+                        Line::from("Project files stay untouched."),
+                        Line::from("Its agent tab must be closed first."),
+                    ],
+                },
             ),
         };
         frame.render_widget(Clear, layout.popup);
@@ -2105,9 +2256,10 @@ fn run_loop(
             Intent::CreateSession {
                 project_id,
                 session_name,
+                mode,
             } => {
                 let result = store.update_project_state(&project_id, |project, state| {
-                    create_session(herdr, project, state, &session_name, now_ms())
+                    create_session(herdr, project, state, &session_name, mode, now_ms())
                 });
                 match result {
                     Ok(_) => return Ok(()),
@@ -2194,6 +2346,7 @@ mod tests {
         picker.state.sessions.push(Session {
             project_id: "demo".into(),
             name: "feat/one".into(),
+            mode: SessionMode::Worktree,
             worktree_path: PathBuf::from("/worktrees/demo/feat-one"),
             pending_temporary_branch: None,
             created_at_ms: 1,
@@ -2209,6 +2362,7 @@ mod tests {
             picker.state.sessions.push(Session {
                 project_id: "demo".into(),
                 name: format!("feat/{index:02}"),
+                mode: SessionMode::Worktree,
                 worktree_path: PathBuf::from(format!("/worktrees/demo/feat-{index:02}")),
                 pending_temporary_branch: None,
                 created_at_ms: index,
@@ -2291,6 +2445,7 @@ mod tests {
             Intent::CreateSession {
                 project_id: "demo".into(),
                 session_name: "feat/one".into(),
+                mode: SessionMode::Worktree,
             }
         );
     }
@@ -2425,14 +2580,16 @@ mod tests {
     }
 
     #[test]
-    fn new_session_is_a_compact_detached_worktree_dialog() {
+    fn new_session_is_a_centered_mode_dialog() {
         let mut picker = picker();
         picker.handle_key(key(KeyCode::Enter));
         picker.handle_key(key(KeyCode::Char('n')));
         let area = Rect::new(0, 0, 120, 36);
         let layout = NewSessionLayout::new(area);
         assert_eq!(layout.popup.width, 64);
-        assert_eq!(layout.popup.height, 11);
+        assert_eq!(layout.popup.height, 13);
+        assert_eq!(layout.popup.x, 28);
+        assert_eq!(layout.popup.y, 12);
 
         let backend = TestBackend::new(area.width, area.height);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -2447,7 +2604,67 @@ mod tests {
         assert!(rendered.contains("Projects"));
         assert!(rendered.contains("Creates an isolated detached worktree."));
         assert!(rendered.contains("Starts in detached HEAD state."));
+        assert!(rendered.contains("[Worktree]"));
+        assert!(rendered.contains("Local"));
         assert!(rendered.contains("Title"));
+    }
+
+    #[test]
+    fn new_session_popup_is_centered_in_an_offset_odd_sized_viewport() {
+        let area = Rect::new(7, 11, 91, 31);
+        let popup = NewSessionLayout::new(area).popup;
+
+        let left = popup.x - area.x;
+        let right = area.right() - popup.right();
+        let top = popup.y - area.y;
+        let bottom = area.bottom() - popup.bottom();
+        assert!(left.abs_diff(right) <= 1);
+        assert!(top.abs_diff(bottom) <= 1);
+    }
+
+    #[test]
+    fn arrow_key_selects_local_mode_for_a_new_session() {
+        let mut picker = picker();
+        picker.handle_key(key(KeyCode::Enter));
+        picker.handle_key(key(KeyCode::Char('n')));
+        picker.handle_key(key(KeyCode::Right));
+        for character in "quick fix".chars() {
+            picker.handle_key(key(KeyCode::Char(character)));
+        }
+
+        assert_eq!(
+            picker.handle_key(key(KeyCode::Enter)),
+            Intent::CreateSession {
+                project_id: "demo".into(),
+                session_name: "quick fix".into(),
+                mode: SessionMode::Local,
+            }
+        );
+    }
+
+    #[test]
+    fn mouse_selects_local_mode_for_a_new_session() {
+        let mut picker = picker();
+        picker.handle_key(key(KeyCode::Enter));
+        picker.handle_key(key(KeyCode::Char('n')));
+        let area = Rect::new(0, 0, 120, 36);
+        let layout = NewSessionLayout::new(area);
+
+        assert_eq!(
+            picker.handle_mouse_at(
+                left_click(layout.mode_local),
+                area,
+                std::time::Instant::now(),
+            ),
+            Intent::None
+        );
+        assert!(matches!(
+            picker.view,
+            View::NewSession {
+                mode: SessionMode::Local,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -2466,6 +2683,7 @@ mod tests {
             Intent::CreateSession {
                 project_id: "demo".into(),
                 session_name: "Improve login".into(),
+                mode: SessionMode::Worktree,
             }
         );
 
@@ -3295,6 +3513,7 @@ mod tests {
             View::NewSession {
                 project_id: "demo".into(),
                 input: String::new(),
+                mode: SessionMode::Worktree,
             }
         );
     }
@@ -3313,6 +3532,7 @@ mod tests {
         picker.state.sessions.push(Session {
             project_id: "other".into(),
             name: "only".into(),
+            mode: SessionMode::Worktree,
             worktree_path: PathBuf::from("/worktrees/other/only"),
             pending_temporary_branch: None,
             created_at_ms: 20,

@@ -1,15 +1,17 @@
 # Switchyard
 
-Switchyard is a project and worktree session picker for [Herdr](https://herdr.dev/).
+Switchyard is a project and coding session picker for [Herdr](https://herdr.dev/).
 Press one key, choose a configured project and session, and Switchyard focuses the
-running agent or opens the worktree as a Herdr workspace and resumes it.
+running agent or opens its session directory as a Herdr workspace and resumes it.
 
 ## Model
 
 - A **project** is a configured Git repository and its default Herdr agent.
-- A **session** is a persistent Git worktree and its agent context. New sessions
-  start at the configured base in detached HEAD state.
-- A session maps to one **Herdr workspace**. Tabs belong to that session.
+- A **worktree session** is an isolated persistent Git worktree and its agent
+  context. It starts at the configured base in detached HEAD state.
+- A **local session** runs directly in the configured project directory. One
+  project can have multiple local sessions; they share a Herdr workspace but use
+  separate agent tabs and native agent contexts.
 - Project configuration and the session registry are separate files managed through
   Herdr's plugin config and state directories.
 
@@ -59,10 +61,10 @@ Use the arrow keys or mouse wheel to move, `Enter` or a double-click to open a
 directory, and `Backspace` to move to its parent. `Esc` closes the picker.
 
 Open a project and choose **New session** or press `n`. The title identifies the
-session; it is not a Git branch name. Switchyard asks Herdr to create and focus the
-worktree workspace, detaches it from the temporary creation branch, then starts the
-configured agent in its root pane. Create a real branch later when the work is ready
-to keep, matching Codex's worktree model.
+session; it is not a Git branch name. Choose **Worktree** (the default) for an
+isolated detached worktree, or **Local** to run directly in the project directory.
+Use the left/right arrow keys or click a mode. Multiple local sessions are allowed
+for the same project and each receives its own agent tab.
 
 The picker supports both keyboard and mouse input. Click a project or session to
 select it, double-click a session to open it, use the mouse wheel to move through
@@ -70,10 +72,11 @@ either list, and click **Add project**, **New session**, or **Focus agent** to r
 that action. Press `Delete` or `Backspace` on a selected project or session, or
 right-click its row, to open a deletion confirmation. Removing a project only
 unregisters it from Switchyard and requires its sessions to be removed first;
-the project directory is never deleted. Removing a session deletes its worktree
-and registry entry. Dirty worktrees and detached commits that are not reachable
-from a Git ref are refused rather than discarded; create a branch or tag first.
-An open session must have its Herdr workspace closed before it can be removed.
+the project directory is never deleted. Removing a worktree session deletes its
+worktree and registry entry; dirty worktrees and detached commits that are not
+reachable from a Git ref are refused rather than discarded. Removing a local
+session only removes its registry entry and never deletes project files. Close the
+session's Herdr workspace (worktree) or exact agent tab (local) before removing it.
 
 Worktree placement inherits Herdr's `worktrees.directory` setting. Switchyard does
 not keep a second worktree-root setting that could disagree with Herdr.
@@ -81,9 +84,10 @@ not keep a second worktree-root setting that could disagree with Herdr.
 Selecting a stored session follows this order:
 
 1. focus its running agent if the workspace is already open;
-2. create a dedicated worktree-root tab and restart the Agent if it is not running;
-3. open the registered worktree and resume the agent if it is dormant;
-4. report `missing` without destructive repair if the worktree path disappeared.
+2. create a dedicated session-root tab and restart the Agent if it is not running;
+3. open the registered worktree or project directory and resume the agent if it is
+   dormant;
+4. report `missing` without destructive repair if a worktree path disappeared.
 
 Codex, Claude, and Pi use their native session id when a Herdr integration reported
 one. Without an id, Switchyard falls back to the agent's native resume picker.
@@ -119,9 +123,9 @@ Built-in themes are `jade-dark` (default), `midnight-dark`, `paper-light`, and
 names are rejected instead of silently falling back.
 
 Switchyard writes `sessions.json` under `HERDR_PLUGIN_STATE_DIR`. It records only
-Switchyard-managed sessions, their worktree paths, timestamps, and the most recent
-native agent session reference. Herdr remains the runtime source for workspace,
-pane, and agent status.
+Switchyard-managed sessions, their local/worktree mode, paths, timestamps, and the
+most recent native agent session reference. Herdr remains the runtime source for
+workspace, pane, and agent status.
 
 ## Develop
 

@@ -75,14 +75,25 @@ impl CliHerdr {
 impl Herdr for CliHerdr {
     fn snapshot(&self) -> Result<RuntimeSnapshot> {
         let workspace_response = self.run_json(["workspace", "list"])?;
+        let pane_response = self.run_json(["pane", "list"])?;
+        let panes = array_at(&pane_response, "/result/panes")?;
         let workspaces = array_at(&workspace_response, "/result/workspaces")?
             .iter()
             .filter_map(|workspace| {
+                let id = string_at(workspace, "/workspace_id").ok()?;
+                let checkout_path = workspace
+                    .pointer("/worktree/checkout_path")
+                    .and_then(Value::as_str)
+                    .or_else(|| {
+                        panes.iter().find_map(|pane| {
+                            (pane.pointer("/workspace_id").and_then(Value::as_str) == Some(id))
+                                .then(|| pane.pointer("/cwd").and_then(Value::as_str))
+                                .flatten()
+                        })
+                    })?;
                 Some(RuntimeWorkspace {
-                    id: string_at(workspace, "/workspace_id").ok()?.to_owned(),
-                    checkout_path: PathBuf::from(
-                        string_at(workspace, "/worktree/checkout_path").ok()?,
-                    ),
+                    id: id.to_owned(),
+                    checkout_path: PathBuf::from(checkout_path),
                 })
             })
             .collect();
@@ -220,6 +231,23 @@ impl Herdr for CliHerdr {
         ];
         let response = self.run_json(args)?;
         self.opened_workspace_with_tab_label(&response, &session.name)
+    }
+
+    fn open_local(&self, project: &Project, _session: &Session) -> Result<OpenedWorkspace> {
+        let response = self.run_json([
+            OsString::from("workspace"),
+            OsString::from("create"),
+            OsString::from("--cwd"),
+            project.path.as_os_str().to_owned(),
+            OsString::from("--label"),
+            OsString::from(&project.name),
+            OsString::from("--focus"),
+        ])?;
+        Ok(OpenedWorkspace {
+            workspace_id: string_at(&response, "/result/workspace/workspace_id")?.to_owned(),
+            pane_id: string_at(&response, "/result/root_pane/pane_id")?.to_owned(),
+            worktree_path: project.path.clone(),
+        })
     }
 
     fn focus_workspace(&self, workspace_id: &str) -> Result<()> {

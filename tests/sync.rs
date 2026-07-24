@@ -10,7 +10,7 @@ use herdr_switchyard::{
     coordinator::{Herdr, agent_name},
     model::{
         AgentSession, Config, CreatedAgentPane, OpenedWorkspace, Project, RuntimeAgent,
-        RuntimeSnapshot, RuntimeWorkspace, Session,
+        RuntimeSnapshot, RuntimeWorkspace, Session, SessionMode,
     },
     picker::sync,
     store::Store,
@@ -50,6 +50,10 @@ impl Herdr for SnapshotHerdr {
     }
 
     fn open_worktree(&self, _project: &Project, _session: &Session) -> Result<OpenedWorkspace> {
+        bail!("not used")
+    }
+
+    fn open_local(&self, _project: &Project, _session: &Session) -> Result<OpenedWorkspace> {
         bail!("not used")
     }
 
@@ -133,6 +137,7 @@ fn concurrent_hooks_cannot_commit_an_older_snapshot_last() {
             state.sessions.push(Session {
                 project_id: "demo".into(),
                 name: "feat/one".into(),
+                mode: SessionMode::Worktree,
                 worktree_path: PathBuf::from("/worktrees/demo/feat-one"),
                 pending_temporary_branch: None,
                 created_at_ms: 1,

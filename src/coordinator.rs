@@ -5,7 +5,7 @@ use anyhow::{Context, Result, bail};
 use crate::{
     model::{
         CreatedAgentPane, CreatedWorktree, OpenedWorkspace, Project, RuntimeSnapshot, Session,
-        State, is_supported_agent,
+        SessionMode, State, is_supported_agent,
     },
     paths::same_path,
     repository::remove_worktree,
@@ -21,6 +21,7 @@ pub trait Herdr {
         temporary_branch: &str,
     ) -> Result<()>;
     fn open_worktree(&self, project: &Project, session: &Session) -> Result<OpenedWorkspace>;
+    fn open_local(&self, project: &Project, session: &Session) -> Result<OpenedWorkspace>;
     fn focus_workspace(&self, workspace_id: &str) -> Result<()>;
     fn focus_agent(&self, pane_id: &str) -> Result<()>;
     fn create_agent_pane(
@@ -119,9 +120,14 @@ pub fn activate_existing<H: Herdr>(
         return Ok(Activation::Focused);
     }
 
-    let opened = herdr
-        .open_worktree(project, session)
-        .with_context(|| format!("open worktree for session {session_name:?}"))?;
+    let opened = match session.mode {
+        SessionMode::Local => herdr
+            .open_local(project, session)
+            .with_context(|| format!("open local session {session_name:?}"))?,
+        SessionMode::Worktree => herdr
+            .open_worktree(project, session)
+            .with_context(|| format!("open worktree for session {session_name:?}"))?,
+    };
     if recovered_pending_detach {
         start_new_agent(herdr, project, session, &opened.pane_id)?;
         session.pending_temporary_branch = None;
@@ -136,6 +142,7 @@ pub fn create_session<H: Herdr>(
     project: &Project,
     state: &mut State,
     session_name: &str,
+    mode: SessionMode,
     now_ms: u64,
 ) -> Result<Activation> {
     ensure_supported_agent(project)?;
@@ -154,12 +161,17 @@ pub fn create_session<H: Herdr>(
         );
     }
 
+    if mode == SessionMode::Local {
+        return create_local_session(herdr, project, state, session_name, now_ms);
+    }
+
     let created = herdr
         .create_worktree(project, session_name)
         .with_context(|| format!("create worktree for session {session_name:?}"))?;
     state.sessions.push(Session {
         project_id: project.id.clone(),
         name: session_name.to_owned(),
+        mode,
         worktree_path: created.workspace.worktree_path.clone(),
         pending_temporary_branch: created.pending_temporary_branch,
         created_at_ms: now_ms,
@@ -176,6 +188,53 @@ pub fn create_session<H: Herdr>(
         state.sessions.last().expect("session was just registered"),
         &created.workspace.pane_id,
     )?;
+    Ok(Activation::Created)
+}
+
+fn create_local_session<H: Herdr>(
+    herdr: &H,
+    project: &Project,
+    state: &mut State,
+    session_name: &str,
+    now_ms: u64,
+) -> Result<Activation> {
+    let snapshot = herdr.snapshot().context("read Herdr state")?;
+    state.sessions.push(Session {
+        project_id: project.id.clone(),
+        name: session_name.to_owned(),
+        mode: SessionMode::Local,
+        worktree_path: project.path.clone(),
+        pending_temporary_branch: None,
+        created_at_ms: now_ms,
+        last_used_at_ms: now_ms,
+        agent_session: None,
+    });
+    let session = state.sessions.last().expect("session was just registered");
+
+    if let Some(workspace) = snapshot
+        .workspaces
+        .iter()
+        .find(|workspace| same_path(&workspace.checkout_path, &project.path))
+    {
+        herdr
+            .focus_workspace(&workspace.id)
+            .with_context(|| format!("focus workspace for session {session_name:?}"))?;
+        let created = herdr.create_agent_pane(&workspace.id, session_name, &project.path)?;
+        if let Err(start_error) = start_new_agent(herdr, project, session, &created.pane_id) {
+            if let Err(close_error) = herdr.close_tab(&created.tab_id) {
+                return Err(start_error.context(format!(
+                    "also failed to close new agent tab {}: {close_error:#}",
+                    created.tab_id
+                )));
+            }
+            return Err(start_error);
+        }
+    } else {
+        let opened = herdr
+            .open_local(project, session)
+            .with_context(|| format!("open local session {session_name:?}"))?;
+        start_new_agent(herdr, project, session, &opened.pane_id)?;
+    }
     Ok(Activation::Created)
 }
 
@@ -197,17 +256,35 @@ pub fn delete_session<H: Herdr>(
         })?;
     let session = state.sessions[session_index].clone();
     let snapshot = herdr.snapshot().context("read Herdr state")?;
-    if snapshot
-        .workspaces
-        .iter()
-        .any(|workspace| same_path(&workspace.checkout_path, &session.worktree_path))
-    {
-        bail!(
-            "Session {session_name:?} is still open. Close its Herdr workspace first, then delete it."
-        );
+    match session.mode {
+        SessionMode::Local => {
+            let running = snapshot.workspaces.iter().any(|workspace| {
+                same_path(&workspace.checkout_path, &project.path)
+                    && snapshot
+                        .agents
+                        .iter()
+                        .any(|agent| is_managed_agent(agent, project, &session, &workspace.id))
+            });
+            if running {
+                bail!(
+                    "Session {session_name:?} is still open. Close its Herdr agent tab first, then delete it."
+                );
+            }
+        }
+        SessionMode::Worktree => {
+            if snapshot
+                .workspaces
+                .iter()
+                .any(|workspace| same_path(&workspace.checkout_path, &session.worktree_path))
+            {
+                bail!(
+                    "Session {session_name:?} is still open. Close its Herdr workspace first, then delete it."
+                );
+            }
+            remove_worktree(&project.path, &session.worktree_path)
+                .with_context(|| format!("delete worktree for session {session_name:?}"))?;
+        }
     }
-    remove_worktree(&project.path, &session.worktree_path)
-        .with_context(|| format!("delete worktree for session {session_name:?}"))?;
     state.sessions.remove(session_index);
     Ok(())
 }

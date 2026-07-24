@@ -2,7 +2,7 @@ use std::{fs, path::PathBuf};
 
 use anyhow::{Result, anyhow};
 use herdr_switchyard::{
-    model::{Config, Project, Session, State, ThemeName, UiConfig},
+    model::{Config, Project, Session, SessionMode, State, ThemeName, UiConfig},
     store::Store,
 };
 use tempfile::tempdir;
@@ -14,6 +14,25 @@ fn missing_files_load_as_empty_versioned_documents() {
 
     assert_eq!(store.load_config().unwrap(), Config::default());
     assert_eq!(store.load_state().unwrap(), State::default());
+}
+
+#[test]
+fn sessions_without_a_mode_migrate_to_worktree_mode() {
+    let state: State = serde_json::from_str(
+        r#"{
+            "version": 1,
+            "sessions": [{
+                "project_id": "demo",
+                "name": "legacy",
+                "worktree_path": "/worktrees/demo/legacy",
+                "created_at_ms": 1,
+                "last_used_at_ms": 1
+            }]
+        }"#,
+    )
+    .unwrap();
+
+    assert_eq!(state.sessions[0].mode, SessionMode::Worktree);
 }
 
 #[test]
@@ -39,6 +58,7 @@ fn project_config_and_session_state_round_trip_in_separate_files() {
             state.sessions.push(Session {
                 project_id: "demo".into(),
                 name: "feat/one".into(),
+                mode: SessionMode::Worktree,
                 worktree_path: PathBuf::from("/worktrees/demo/feat-one"),
                 pending_temporary_branch: None,
                 created_at_ms: 1,
@@ -141,6 +161,7 @@ fn project_removal_is_blocked_by_sessions_under_the_same_state_lock() {
             state.sessions.push(Session {
                 project_id: "demo".into(),
                 name: "feat/one".into(),
+                mode: SessionMode::Worktree,
                 worktree_path: PathBuf::from("/worktrees/demo/feat-one"),
                 pending_temporary_branch: None,
                 created_at_ms: 1,
@@ -166,6 +187,7 @@ fn state_changes_survive_a_later_operation_error() {
         state.sessions.push(Session {
             project_id: "demo".into(),
             name: "feat/partial".into(),
+            mode: SessionMode::Worktree,
             worktree_path: PathBuf::from("/worktrees/demo/feat-partial"),
             pending_temporary_branch: None,
             created_at_ms: 1,

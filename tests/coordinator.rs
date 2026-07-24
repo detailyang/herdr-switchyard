@@ -11,7 +11,7 @@ use herdr_switchyard::{
     },
     model::{
         AgentSession, CreatedAgentPane, CreatedWorktree, OpenedWorkspace, Project, RuntimeAgent,
-        RuntimeSnapshot, RuntimeWorkspace, Session, State,
+        RuntimeSnapshot, RuntimeWorkspace, Session, SessionMode, State,
     },
 };
 
@@ -67,6 +67,17 @@ impl Herdr for FakeHerdr {
             workspace_id: "w2".into(),
             pane_id: "w2:p1".into(),
             worktree_path: session.worktree_path.clone(),
+        })
+    }
+
+    fn open_local(&self, project: &Project, session: &Session) -> Result<OpenedWorkspace> {
+        self.calls
+            .borrow_mut()
+            .push(format!("open-local:{}:{}", project.id, session.name));
+        Ok(OpenedWorkspace {
+            workspace_id: "w2".into(),
+            pane_id: "w2:p1".into(),
+            worktree_path: project.path.clone(),
         })
     }
 
@@ -131,6 +142,7 @@ fn session(path: impl AsRef<Path>) -> Session {
     Session {
         project_id: "demo".into(),
         name: "feat/one".into(),
+        mode: SessionMode::Worktree,
         worktree_path: path.as_ref().to_owned(),
         pending_temporary_branch: None,
         created_at_ms: 1,
@@ -175,10 +187,19 @@ fn creates_a_worktree_records_it_and_starts_the_project_agent() {
     let herdr = FakeHerdr::default();
     let mut state = State::default();
 
-    let result = create_session(&herdr, &project(), &mut state, "feat/one", 42).unwrap();
+    let result = create_session(
+        &herdr,
+        &project(),
+        &mut state,
+        "feat/one",
+        SessionMode::Worktree,
+        42,
+    )
+    .unwrap();
 
     assert_eq!(result, Activation::Created);
     assert_eq!(state.sessions.len(), 1);
+    assert_eq!(state.sessions[0].mode, SessionMode::Worktree);
     assert_eq!(
         herdr.calls.into_inner(),
         [
@@ -186,6 +207,144 @@ fn creates_a_worktree_records_it_and_starts_the_project_agent() {
             format!("start:{}:codex:w2:p1:", agent_name(&project(), "feat/one"))
         ]
     );
+}
+
+#[test]
+fn creates_multiple_local_sessions_in_dedicated_tabs_of_the_project_workspace() {
+    let herdr = FakeHerdr {
+        snapshot: RuntimeSnapshot {
+            workspaces: vec![RuntimeWorkspace {
+                id: "w1".into(),
+                checkout_path: project().path,
+            }],
+            agents: Vec::new(),
+        },
+        ..Default::default()
+    };
+    let mut state = State::default();
+
+    create_session(
+        &herdr,
+        &project(),
+        &mut state,
+        "first",
+        SessionMode::Local,
+        42,
+    )
+    .unwrap();
+    create_session(
+        &herdr,
+        &project(),
+        &mut state,
+        "second",
+        SessionMode::Local,
+        43,
+    )
+    .unwrap();
+
+    assert_eq!(state.sessions.len(), 2);
+    assert!(state.sessions.iter().all(
+        |session| session.mode == SessionMode::Local && session.worktree_path == project().path
+    ));
+    assert_eq!(
+        herdr.calls.into_inner(),
+        [
+            "focus:w1".to_owned(),
+            "create-agent-pane:w1:first:/repos/demo".to_owned(),
+            format!("start:{}:codex:w1:p4:", agent_name(&project(), "first")),
+            "focus:w1".to_owned(),
+            "create-agent-pane:w1:second:/repos/demo".to_owned(),
+            format!("start:{}:codex:w1:p4:", agent_name(&project(), "second")),
+        ]
+    );
+}
+
+#[test]
+fn opens_a_dormant_local_session_in_the_project_directory() {
+    let herdr = FakeHerdr::default();
+    let mut local = session("/repos/demo");
+    local.mode = SessionMode::Local;
+    let mut state = State {
+        sessions: vec![local],
+        ..Default::default()
+    };
+
+    let result = activate_existing(&herdr, &project(), &mut state, "feat/one", 42).unwrap();
+
+    assert_eq!(result, Activation::Opened);
+    assert_eq!(
+        herdr.calls.into_inner(),
+        [
+            "open-local:demo:feat/one".to_owned(),
+            format!(
+                "start:{}:codex:w2:p1:resume",
+                agent_name(&project(), "feat/one")
+            ),
+        ]
+    );
+}
+
+#[test]
+fn deletes_an_idle_local_session_without_removing_the_shared_project_directory() {
+    let herdr = FakeHerdr {
+        snapshot: RuntimeSnapshot {
+            workspaces: vec![RuntimeWorkspace {
+                id: "w1".into(),
+                checkout_path: project().path,
+            }],
+            agents: vec![RuntimeAgent {
+                workspace_id: "w1".into(),
+                pane_id: "w1:p2".into(),
+                name: Some(agent_name(&project(), "another")),
+                kind: Some("codex".into()),
+                status: "idle".into(),
+                session: None,
+            }],
+        },
+        ..Default::default()
+    };
+    let mut local = session("/repos/demo");
+    local.mode = SessionMode::Local;
+    let mut state = State {
+        sessions: vec![local],
+        ..Default::default()
+    };
+
+    delete_session(&herdr, &project(), &mut state, "feat/one").unwrap();
+
+    assert!(state.sessions.is_empty());
+}
+
+#[test]
+fn refuses_to_delete_a_local_session_while_its_exact_agent_is_running() {
+    let herdr = FakeHerdr {
+        snapshot: RuntimeSnapshot {
+            workspaces: vec![RuntimeWorkspace {
+                id: "w1".into(),
+                checkout_path: project().path,
+            }],
+            agents: vec![RuntimeAgent {
+                workspace_id: "w1".into(),
+                pane_id: "w1:p2".into(),
+                name: Some(agent_name(&project(), "feat/one")),
+                kind: Some("codex".into()),
+                status: "idle".into(),
+                session: None,
+            }],
+        },
+        ..Default::default()
+    };
+    let mut local = session("/repos/demo");
+    local.mode = SessionMode::Local;
+    let mut state = State {
+        sessions: vec![local],
+        ..Default::default()
+    };
+
+    let error = delete_session(&herdr, &project(), &mut state, "feat/one").unwrap_err();
+
+    assert!(format!("{error:#}").contains("Close its Herdr agent tab first"));
+    assert_eq!(state.sessions.len(), 1);
 }
 
 #[test]
@@ -220,7 +379,15 @@ fn registers_a_created_worktree_before_reporting_a_detach_warning() {
     };
     let mut state = State::default();
 
-    let error = create_session(&herdr, &project(), &mut state, "Improve login", 42).unwrap_err();
+    let error = create_session(
+        &herdr,
+        &project(),
+        &mut state,
+        "Improve login",
+        SessionMode::Worktree,
+        42,
+    )
+    .unwrap_err();
 
     assert_eq!(state.sessions.len(), 1);
     assert_eq!(state.sessions[0].name, "Improve login");

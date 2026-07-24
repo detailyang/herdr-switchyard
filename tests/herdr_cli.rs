@@ -10,7 +10,7 @@ use std::{
 use herdr_switchyard::{
     coordinator::{Herdr, agent_name},
     herdr::CliHerdr,
-    model::{Project, Session},
+    model::{Project, Session, SessionMode},
 };
 use tempfile::tempdir;
 
@@ -24,7 +24,10 @@ fn fake_herdr() -> (tempfile::TempDir, CliHerdr, PathBuf) {
 printf '%s\n' "$*" >> '{}'
 case "$1 $2" in
   "workspace list")
-    printf '%s\n' '{{"result":{{"type":"workspace_list","workspaces":[{{"workspace_id":"w1","worktree":{{"checkout_path":"/worktrees/demo/feat-one"}}}}]}}}}'
+    printf '%s\n' '{{"result":{{"type":"workspace_list","workspaces":[{{"workspace_id":"w1","worktree":{{"checkout_path":"/worktrees/demo/feat-one"}}}},{{"workspace_id":"w4"}}]}}}}'
+    ;;
+  "pane list")
+    printf '%s\n' '{{"result":{{"type":"pane_list","panes":[{{"pane_id":"w1:p1","workspace_id":"w1","tab_id":"w1:t1","cwd":"/worktrees/demo/feat-one"}},{{"pane_id":"w4:p1","workspace_id":"w4","tab_id":"w4:t1","cwd":"/repos/demo"}}]}}}}'
     ;;
   "agent list")
     printf '%s\n' '{{"result":{{"type":"agent_list","agents":[{{"workspace_id":"w1","pane_id":"w1:p2","name":"{managed_name}","agent":"codex","agent_status":"working","agent_session":{{"agent":"codex","kind":"id","value":"session-123"}}}}]}}}}'
@@ -34,6 +37,12 @@ case "$1 $2" in
     ;;
   "worktree open")
     printf '%s\n' '{{"result":{{"type":"worktree_opened","workspace":{{"workspace_id":"w3"}},"tab":{{"tab_id":"w3:t1"}},"root_pane":{{"pane_id":"w3:p1"}},"worktree":{{"path":"/worktrees/demo/feat-one"}}}}}}'
+    ;;
+  "workspace create")
+    case " $* " in
+      *" --json "*) printf '%s\n' '{{"error":{{"message":"unknown option: --json"}}}}' >&2; exit 2 ;;
+    esac
+    printf '%s\n' '{{"result":{{"type":"workspace_created","workspace":{{"workspace_id":"w4"}},"root_pane":{{"pane_id":"w4:p1"}}}}}}'
     ;;
   "tab create")
     printf '%s\n' '{{"result":{{"type":"tab_created","tab":{{"tab_id":"w1:t4"}},"root_pane":{{"pane_id":"w1:p4"}}}}}}'
@@ -99,6 +108,11 @@ fn parses_the_runtime_snapshot_from_herdr_json() {
     let snapshot = herdr.snapshot().unwrap();
 
     assert_eq!(snapshot.workspaces[0].id, "w1");
+    assert_eq!(snapshot.workspaces[1].id, "w4");
+    assert_eq!(
+        snapshot.workspaces[1].checkout_path,
+        PathBuf::from("/repos/demo")
+    );
     assert_eq!(snapshot.agents[0].pane_id, "w1:p2");
     assert_eq!(
         snapshot.agents[0].session.as_ref().unwrap().value,
@@ -361,6 +375,7 @@ fn opens_a_registered_worktree_by_its_persisted_path() {
     let session = Session {
         project_id: "demo".into(),
         name: "feat/one".into(),
+        mode: SessionMode::Worktree,
         worktree_path: PathBuf::from("/worktrees/demo/feat-one"),
         pending_temporary_branch: None,
         created_at_ms: 1,
@@ -376,6 +391,29 @@ fn opens_a_registered_worktree_by_its_persisted_path() {
         "worktree open --cwd /repos/demo --path /worktrees/demo/feat-one --label feat/one --focus --json"
     ));
     assert!(calls.contains("tab rename w3:t1 feat/one"));
+}
+
+#[test]
+fn opens_a_local_session_in_the_configured_project_directory() {
+    let (_root, herdr, log) = fake_herdr();
+    let session = Session {
+        project_id: "demo".into(),
+        name: "local one".into(),
+        mode: SessionMode::Local,
+        worktree_path: PathBuf::from("/repos/demo"),
+        pending_temporary_branch: None,
+        created_at_ms: 1,
+        last_used_at_ms: 1,
+        agent_session: None,
+    };
+
+    let opened = herdr.open_local(&project(), &session).unwrap();
+
+    assert_eq!(opened.workspace_id, "w4");
+    assert_eq!(opened.worktree_path, PathBuf::from("/repos/demo"));
+    let calls = fs::read_to_string(log).unwrap();
+    assert!(calls.contains("workspace create --cwd /repos/demo --label Demo --focus"));
+    assert!(!calls.contains("workspace create --cwd /repos/demo --label Demo --focus --json"));
 }
 
 #[test]

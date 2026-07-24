@@ -80,6 +80,8 @@ impl Default for State {
 pub struct Session {
     pub project_id: String,
     pub name: String,
+    #[serde(default)]
+    pub mode: SessionMode,
     pub worktree_path: PathBuf,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_temporary_branch: Option<String>,
@@ -87,6 +89,14 @@ pub struct Session {
     pub last_used_at_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_session: Option<AgentSession>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum SessionMode {
+    Local,
+    #[default]
+    Worktree,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
