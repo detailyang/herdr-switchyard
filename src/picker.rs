@@ -2091,7 +2091,7 @@ impl Picker {
                         Line::from(""),
                         Line::from("Deletes its Git worktree and session record."),
                         Line::from("Dirty files or unbranched commits prevent deletion."),
-                        Line::from("Open sessions must be closed first."),
+                        Line::from("Its Herdr workspace is closed automatically."),
                     ],
                     SessionMode::Local => vec![
                         Line::from(Span::styled(
@@ -2103,7 +2103,7 @@ impl Picker {
                         Line::from(""),
                         Line::from("Removes the session record only."),
                         Line::from("Project files stay untouched."),
-                        Line::from("Its agent tab must be closed first."),
+                        Line::from("Its Herdr agent tab is closed automatically."),
                     ],
                 },
             ),
@@ -3031,7 +3031,7 @@ mod tests {
         assert!(rendered.contains("Delete session"));
         assert!(rendered.contains("Deletes its Git worktree"));
         assert!(rendered.contains("Dirty files or unbranched commits prevent deletion"));
-        assert!(rendered.contains("Open sessions must be closed first"));
+        assert!(rendered.contains("Herdr workspace is closed automatically"));
     }
 
     #[test]

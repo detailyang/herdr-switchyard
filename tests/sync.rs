@@ -102,6 +102,18 @@ impl Herdr for SnapshotHerdr {
         bail!("not used")
     }
 
+    fn close_agent_tab(&self, _pane_id: &str) -> Result<()> {
+        bail!("not used")
+    }
+
+    fn workspace_for_tab(&self, _tab_id: &str) -> Result<Option<String>> {
+        bail!("not used")
+    }
+
+    fn close_workspace(&self, _workspace_id: &str) -> Result<()> {
+        bail!("not used")
+    }
+
     fn start_agent(
         &self,
         _name: &str,

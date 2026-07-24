@@ -8,7 +8,7 @@ use crate::{
         SessionMode, State, is_supported_agent,
     },
     paths::same_path,
-    repository::remove_worktree,
+    repository::{remove_worktree, validate_worktree_removal},
 };
 
 pub trait Herdr {
@@ -50,6 +50,9 @@ pub trait Herdr {
         cwd: &Path,
     ) -> Result<CreatedAgentPane>;
     fn close_tab(&self, tab_id: &str) -> Result<()>;
+    fn close_agent_tab(&self, pane_id: &str) -> Result<()>;
+    fn workspace_for_tab(&self, tab_id: &str) -> Result<Option<String>>;
+    fn close_workspace(&self, workspace_id: &str) -> Result<()>;
     fn start_agent(&self, name: &str, kind: &str, pane_id: &str, args: &[String]) -> Result<()>;
 }
 
@@ -337,28 +340,91 @@ pub fn delete_session<H: Herdr>(
     let snapshot = herdr.snapshot().context("read Herdr state")?;
     match session.mode {
         SessionMode::Local => {
-            let running = snapshot.workspaces.iter().any(|workspace| {
-                same_path(&workspace.checkout_path, &project.path)
-                    && snapshot
+            let running_agent = snapshot.workspaces.iter().find_map(|workspace| {
+                same_path(&workspace.checkout_path, &project.path).then(|| {
+                    snapshot
                         .agents
                         .iter()
-                        .any(|agent| is_managed_agent(agent, project, &session, &workspace.id))
+                        .find(|agent| is_managed_agent(agent, project, &session, &workspace.id))
+                })?
             });
-            if running {
-                bail!(
-                    "Session {session_name:?} is still open. Close its Herdr agent tab first, then delete it."
-                );
+            if let Some(agent) = running_agent {
+                herdr
+                    .close_agent_tab(&agent.pane_id)
+                    .with_context(|| format!("close Herdr tab for session {session_name:?}"))?;
+            } else {
+                let runtime_namespace = herdr.runtime_namespace();
+                if let Some(tab_id) = runtime_namespace
+                    .as_ref()
+                    .filter(|namespace| session.tab_namespace.as_ref() == Some(*namespace))
+                    .and(session.tab_id.as_deref())
+                {
+                    let workspace_id = herdr.workspace_for_tab(tab_id).with_context(|| {
+                        format!("locate Herdr tab for session {session_name:?}")
+                    })?;
+                    let is_project_tab = workspace_id.as_deref().is_some_and(|workspace_id| {
+                        snapshot.workspaces.iter().any(|workspace| {
+                            workspace.id == workspace_id
+                                && same_path(&workspace.checkout_path, &project.path)
+                        })
+                    });
+                    if is_project_tab {
+                        herdr.close_tab(tab_id).with_context(|| {
+                            format!("close Herdr tab for session {session_name:?}")
+                        })?;
+                    }
+                }
             }
         }
         SessionMode::Worktree => {
-            if snapshot
+            validate_worktree_removal(&project.path, &session.worktree_path)
+                .with_context(|| format!("validate worktree for session {session_name:?}"))?;
+            let matching_workspaces = snapshot
                 .workspaces
                 .iter()
-                .any(|workspace| same_path(&workspace.checkout_path, &session.worktree_path))
-            {
-                bail!(
-                    "Session {session_name:?} is still open. Close its Herdr workspace first, then delete it."
-                );
+                .filter(|workspace| same_path(&workspace.checkout_path, &session.worktree_path))
+                .collect::<Vec<_>>();
+            if !matching_workspaces.is_empty() {
+                let runtime_namespace = herdr.runtime_namespace();
+                let owned_tab_id = runtime_namespace
+                    .as_ref()
+                    .filter(|namespace| session.tab_namespace.as_ref() == Some(*namespace))
+                    .and(session.tab_id.as_deref());
+                let workspace_from_tab = owned_tab_id
+                    .map(|tab_id| herdr.workspace_for_tab(tab_id))
+                    .transpose()
+                    .with_context(|| {
+                        format!("locate Herdr workspace for session {session_name:?}")
+                    })?
+                    .flatten();
+                let workspace = workspace_from_tab
+                    .as_deref()
+                    .and_then(|workspace_id| {
+                        matching_workspaces
+                            .iter()
+                            .find(|workspace| workspace.id == workspace_id)
+                            .copied()
+                    })
+                    .or_else(|| {
+                        matching_workspaces.iter().find_map(|workspace| {
+                            snapshot
+                                .agents
+                                .iter()
+                                .any(|agent| {
+                                    is_managed_agent(agent, project, &session, &workspace.id)
+                                })
+                                .then_some(*workspace)
+                        })
+                    })
+                    .or_else(|| (matching_workspaces.len() == 1).then_some(matching_workspaces[0]))
+                    .with_context(|| {
+                        format!(
+                            "cannot safely close session {session_name:?}: its Herdr workspace ownership is ambiguous"
+                        )
+                    })?;
+                herdr.close_workspace(&workspace.id).with_context(|| {
+                    format!("close Herdr workspace for session {session_name:?}")
+                })?;
             }
             remove_worktree(&project.path, &session.worktree_path)
                 .with_context(|| format!("delete worktree for session {session_name:?}"))?;

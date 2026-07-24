@@ -429,6 +429,28 @@ impl Herdr for CliHerdr {
         Ok(())
     }
 
+    fn close_agent_tab(&self, pane_id: &str) -> Result<()> {
+        let response = self.run_json(["pane", "get", pane_id])?;
+        let tab_id = string_at(&response, "/result/pane/tab_id")?;
+        self.run_json(["tab", "close", tab_id])?;
+        Ok(())
+    }
+
+    fn workspace_for_tab(&self, tab_id: &str) -> Result<Option<String>> {
+        let response = self.run_json(["tab", "list"])?;
+        for tab in array_at(&response, "/result/tabs")? {
+            if string_at(tab, "/tab_id")? == tab_id {
+                return Ok(Some(string_at(tab, "/workspace_id")?.to_owned()));
+            }
+        }
+        Ok(None)
+    }
+
+    fn close_workspace(&self, workspace_id: &str) -> Result<()> {
+        self.run_json(["workspace", "close", workspace_id])?;
+        Ok(())
+    }
+
     fn start_agent(&self, name: &str, kind: &str, pane_id: &str, args: &[String]) -> Result<()> {
         let mut command = vec![
             OsString::from("agent"),

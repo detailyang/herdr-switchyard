@@ -1,6 +1,7 @@
 use std::{
     cell::RefCell,
     path::{Path, PathBuf},
+    process::Command,
 };
 
 use anyhow::Result;
@@ -21,7 +22,10 @@ struct FakeHerdr {
     calls: RefCell<Vec<String>>,
     reusable_session_pane: Option<CreatedAgentPane>,
     runtime_namespace: Option<String>,
+    tab_workspace: Option<String>,
     fail_start: bool,
+    fail_close_tab: bool,
+    fail_close_workspace: bool,
     create_warning: Option<String>,
     create_pending_detach: bool,
 }
@@ -158,6 +162,36 @@ impl Herdr for FakeHerdr {
 
     fn close_tab(&self, tab_id: &str) -> Result<()> {
         self.calls.borrow_mut().push(format!("close-tab:{tab_id}"));
+        if self.fail_close_tab {
+            anyhow::bail!("tab close failed");
+        }
+        Ok(())
+    }
+
+    fn close_agent_tab(&self, pane_id: &str) -> Result<()> {
+        self.calls
+            .borrow_mut()
+            .push(format!("close-agent-tab:{pane_id}"));
+        if self.fail_close_tab {
+            anyhow::bail!("tab close failed");
+        }
+        Ok(())
+    }
+
+    fn workspace_for_tab(&self, tab_id: &str) -> Result<Option<String>> {
+        self.calls
+            .borrow_mut()
+            .push(format!("workspace-for-tab:{tab_id}"));
+        Ok(self.tab_workspace.clone())
+    }
+
+    fn close_workspace(&self, workspace_id: &str) -> Result<()> {
+        self.calls
+            .borrow_mut()
+            .push(format!("close-workspace:{workspace_id}"));
+        if self.fail_close_workspace {
+            anyhow::bail!("workspace close failed");
+        }
         Ok(())
     }
 
@@ -362,10 +396,71 @@ fn deletes_an_idle_local_session_without_removing_the_shared_project_directory()
     delete_session(&herdr, &project(), &mut state, "feat/one").unwrap();
 
     assert!(state.sessions.is_empty());
+    assert!(herdr.calls.into_inner().is_empty());
 }
 
 #[test]
-fn refuses_to_delete_a_local_session_while_its_exact_agent_is_running() {
+fn closes_an_owned_dormant_local_session_tab_before_deleting_its_record() {
+    let herdr = FakeHerdr {
+        snapshot: RuntimeSnapshot {
+            workspaces: vec![RuntimeWorkspace {
+                id: "w1".into(),
+                checkout_path: project().path,
+            }],
+            agents: Vec::new(),
+        },
+        runtime_namespace: Some("/sockets/default".into()),
+        tab_workspace: Some("w1".into()),
+        ..Default::default()
+    };
+    let mut local = session("/repos/demo");
+    local.mode = SessionMode::Local;
+    local.tab_id = Some("w1:t2".into());
+    local.tab_namespace = Some("/sockets/default".into());
+    let mut state = State {
+        sessions: vec![local],
+        ..Default::default()
+    };
+
+    delete_session(&herdr, &project(), &mut state, "feat/one").unwrap();
+
+    assert!(state.sessions.is_empty());
+    assert_eq!(
+        herdr.calls.into_inner(),
+        ["workspace-for-tab:w1:t2", "close-tab:w1:t2"]
+    );
+}
+
+#[test]
+fn deletes_a_dormant_local_session_when_its_saved_tab_is_already_gone() {
+    let herdr = FakeHerdr {
+        snapshot: RuntimeSnapshot {
+            workspaces: vec![RuntimeWorkspace {
+                id: "w1".into(),
+                checkout_path: project().path,
+            }],
+            agents: Vec::new(),
+        },
+        runtime_namespace: Some("/sockets/default".into()),
+        ..Default::default()
+    };
+    let mut local = session("/repos/demo");
+    local.mode = SessionMode::Local;
+    local.tab_id = Some("w1:t2".into());
+    local.tab_namespace = Some("/sockets/default".into());
+    let mut state = State {
+        sessions: vec![local],
+        ..Default::default()
+    };
+
+    delete_session(&herdr, &project(), &mut state, "feat/one").unwrap();
+
+    assert!(state.sessions.is_empty());
+    assert_eq!(herdr.calls.into_inner(), ["workspace-for-tab:w1:t2"]);
+}
+
+#[test]
+fn closes_the_exact_agent_tab_before_deleting_a_running_local_session() {
     let herdr = FakeHerdr {
         snapshot: RuntimeSnapshot {
             workspaces: vec![RuntimeWorkspace {
@@ -390,34 +485,257 @@ fn refuses_to_delete_a_local_session_while_its_exact_agent_is_running() {
         ..Default::default()
     };
 
-    let error = delete_session(&herdr, &project(), &mut state, "feat/one").unwrap_err();
+    delete_session(&herdr, &project(), &mut state, "feat/one").unwrap();
 
-    assert!(format!("{error:#}").contains("Close its Herdr agent tab first"));
-    assert_eq!(state.sessions.len(), 1);
+    assert!(state.sessions.is_empty());
+    assert_eq!(herdr.calls.into_inner(), ["close-agent-tab:w1:p2"]);
 }
 
 #[test]
-fn refuses_to_delete_an_open_session() {
+fn closes_the_exact_agent_tab_when_saved_tab_ownership_is_stale() {
     let herdr = FakeHerdr {
         snapshot: RuntimeSnapshot {
             workspaces: vec![RuntimeWorkspace {
                 id: "w1".into(),
-                checkout_path: PathBuf::from("/worktrees/demo/feat-one"),
+                checkout_path: project().path,
+            }],
+            agents: vec![RuntimeAgent {
+                workspace_id: "w1".into(),
+                pane_id: "w1:p2".into(),
+                name: Some(agent_name(&project(), "feat/one")),
+                kind: Some("codex".into()),
+                status: "idle".into(),
+                session: None,
+            }],
+        },
+        runtime_namespace: Some("/sockets/current".into()),
+        ..Default::default()
+    };
+    let mut local = session("/repos/demo");
+    local.mode = SessionMode::Local;
+    local.tab_id = Some("w1:t2".into());
+    local.tab_namespace = Some("/sockets/other".into());
+    let mut state = State {
+        sessions: vec![local],
+        ..Default::default()
+    };
+
+    delete_session(&herdr, &project(), &mut state, "feat/one").unwrap();
+
+    assert!(state.sessions.is_empty());
+    assert_eq!(herdr.calls.into_inner(), ["close-agent-tab:w1:p2"]);
+}
+
+#[test]
+fn keeps_a_local_session_when_closing_its_agent_tab_fails() {
+    let herdr = FakeHerdr {
+        snapshot: RuntimeSnapshot {
+            workspaces: vec![RuntimeWorkspace {
+                id: "w1".into(),
+                checkout_path: project().path,
+            }],
+            agents: vec![RuntimeAgent {
+                workspace_id: "w1".into(),
+                pane_id: "w1:p2".into(),
+                name: Some(agent_name(&project(), "feat/one")),
+                kind: Some("codex".into()),
+                status: "idle".into(),
+                session: None,
+            }],
+        },
+        fail_close_tab: true,
+        ..Default::default()
+    };
+    let mut local = session("/repos/demo");
+    local.mode = SessionMode::Local;
+    let mut state = State {
+        sessions: vec![local],
+        ..Default::default()
+    };
+
+    let error = delete_session(&herdr, &project(), &mut state, "feat/one").unwrap_err();
+
+    assert!(format!("{error:#}").contains("close Herdr tab"));
+    assert_eq!(state.sessions.len(), 1);
+}
+
+#[test]
+fn closes_the_workspace_before_deleting_an_open_worktree_session() {
+    let (_root, repository, checkout) = repository_with_worktree();
+    let mut project = project();
+    project.path = repository;
+    let herdr = FakeHerdr {
+        snapshot: RuntimeSnapshot {
+            workspaces: vec![RuntimeWorkspace {
+                id: "w2".into(),
+                checkout_path: checkout.clone(),
+            }],
+            agents: Vec::new(),
+        },
+        runtime_namespace: Some("/sockets/default".into()),
+        ..Default::default()
+    };
+    let mut stored = session(&checkout);
+    stored.tab_id = Some("stale:t1".into());
+    stored.tab_namespace = Some("/sockets/default".into());
+    let mut state = State {
+        sessions: vec![stored],
+        ..Default::default()
+    };
+
+    delete_session(&herdr, &project, &mut state, "feat/one").unwrap();
+
+    assert_eq!(
+        herdr.calls.into_inner(),
+        ["workspace-for-tab:stale:t1", "close-workspace:w2"]
+    );
+    assert!(state.sessions.is_empty());
+    assert!(!checkout.exists());
+}
+
+#[test]
+fn closes_the_owned_workspace_when_multiple_workspaces_share_the_worktree_path() {
+    let (_root, repository, checkout) = repository_with_worktree();
+    let mut project = project();
+    project.path = repository;
+    let herdr = FakeHerdr {
+        snapshot: RuntimeSnapshot {
+            workspaces: vec![
+                RuntimeWorkspace {
+                    id: "unrelated".into(),
+                    checkout_path: checkout.clone(),
+                },
+                RuntimeWorkspace {
+                    id: "owned".into(),
+                    checkout_path: checkout.clone(),
+                },
+            ],
+            agents: Vec::new(),
+        },
+        runtime_namespace: Some("/sockets/default".into()),
+        tab_workspace: Some("owned".into()),
+        ..Default::default()
+    };
+    let mut stored = session(&checkout);
+    stored.tab_id = Some("owned:t1".into());
+    stored.tab_namespace = Some("/sockets/default".into());
+    let mut state = State {
+        sessions: vec![stored],
+        ..Default::default()
+    };
+
+    delete_session(&herdr, &project, &mut state, "feat/one").unwrap();
+
+    assert_eq!(
+        herdr.calls.into_inner(),
+        ["workspace-for-tab:owned:t1", "close-workspace:owned"]
+    );
+    assert!(state.sessions.is_empty());
+}
+
+#[test]
+fn keeps_a_worktree_session_when_closing_its_workspace_fails() {
+    let (_root, repository, checkout) = repository_with_worktree();
+    let mut project = project();
+    project.path = repository;
+    let herdr = FakeHerdr {
+        snapshot: RuntimeSnapshot {
+            workspaces: vec![RuntimeWorkspace {
+                id: "w2".into(),
+                checkout_path: checkout.clone(),
+            }],
+            agents: Vec::new(),
+        },
+        fail_close_workspace: true,
+        ..Default::default()
+    };
+    let mut state = State {
+        sessions: vec![session(&checkout)],
+        ..Default::default()
+    };
+
+    let error = delete_session(&herdr, &project, &mut state, "feat/one").unwrap_err();
+
+    assert!(format!("{error:#}").contains("close Herdr workspace"));
+    assert_eq!(state.sessions.len(), 1);
+    assert_eq!(herdr.calls.into_inner(), ["close-workspace:w2"]);
+}
+
+#[test]
+fn does_not_close_an_open_workspace_when_its_worktree_is_dirty() {
+    let (_root, repository, checkout) = repository_with_worktree();
+    std::fs::write(checkout.join("unsaved.txt"), "keep me").unwrap();
+    let mut project = project();
+    project.path = repository;
+    let herdr = FakeHerdr {
+        snapshot: RuntimeSnapshot {
+            workspaces: vec![RuntimeWorkspace {
+                id: "w2".into(),
+                checkout_path: checkout.clone(),
             }],
             agents: Vec::new(),
         },
         ..Default::default()
     };
     let mut state = State {
-        sessions: vec![session("/worktrees/demo/feat-one")],
+        sessions: vec![session(&checkout)],
         ..Default::default()
     };
 
-    let error = delete_session(&herdr, &project(), &mut state, "feat/one").unwrap_err();
+    let error = delete_session(&herdr, &project, &mut state, "feat/one").unwrap_err();
 
-    assert!(format!("{error:#}").contains("Close its Herdr workspace first"));
-    assert_eq!(state.sessions.len(), 1);
+    assert!(format!("{error:#}").contains("uncommitted changes"));
     assert!(herdr.calls.into_inner().is_empty());
+    assert_eq!(state.sessions.len(), 1);
+    assert!(checkout.exists());
+}
+
+fn repository_with_worktree() -> (tempfile::TempDir, PathBuf, PathBuf) {
+    let root = tempfile::tempdir().unwrap();
+    let repository = root.path().join("repository");
+    let checkout = root.path().join("checkout");
+    initialize_repository(&repository);
+    assert!(
+        Command::new("git")
+            .arg("-C")
+            .arg(&repository)
+            .args(["worktree", "add", "--detach"])
+            .arg(&checkout)
+            .status()
+            .unwrap()
+            .success()
+    );
+    (root, repository, checkout)
+}
+
+fn initialize_repository(path: &Path) {
+    std::fs::create_dir_all(path).unwrap();
+    assert!(
+        Command::new("git")
+            .args(["init", "--initial-branch", "main"])
+            .arg(path)
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        Command::new("git")
+            .arg("-C")
+            .arg(path)
+            .args([
+                "-c",
+                "user.name=Switchyard Test",
+                "-c",
+                "user.email=switchyard@example.invalid",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "initial",
+            ])
+            .status()
+            .unwrap()
+            .success()
+    );
 }
 
 #[test]

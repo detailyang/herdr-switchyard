@@ -109,30 +109,15 @@ pub(crate) fn worktree_path_for_branch(repository: &Path, branch: &str) -> Resul
 }
 
 pub(crate) fn remove_worktree(repository: &Path, worktree: &Path) -> Result<()> {
-    let exists = worktree
-        .try_exists()
-        .with_context(|| format!("inspect worktree at {}", worktree.display()))?;
-    let registered = registered_worktrees(repository)?;
-    let registered_worktree = registered
-        .iter()
-        .find(|registered| equivalent_worktree_path(registered, worktree));
+    let (exists, registered_worktree) = removable_worktree(repository, worktree)?;
     let Some(registered_worktree) = registered_worktree else {
-        if exists {
-            bail!(
-                "Path {} is not a registered Git worktree",
-                worktree.display()
-            );
-        }
         return Ok(());
     };
-    if exists {
-        ensure_worktree_safe_to_remove(worktree)?;
-    }
     let output = Command::new("git")
         .arg("-C")
         .arg(repository)
         .args(["worktree", "remove"])
-        .arg(registered_worktree)
+        .arg(&registered_worktree)
         .output()
         .with_context(|| format!("remove Git worktree at {}", worktree.display()))?;
     if output.status.success() {
@@ -144,6 +129,33 @@ pub(crate) fn remove_worktree(repository: &Path, worktree: &Path) -> Result<()> 
     }
     let message = String::from_utf8_lossy(&output.stderr).trim().to_owned();
     bail!("Git refused to remove the worktree: {message}")
+}
+
+pub(crate) fn validate_worktree_removal(repository: &Path, worktree: &Path) -> Result<()> {
+    removable_worktree(repository, worktree).map(|_| ())
+}
+
+fn removable_worktree(repository: &Path, worktree: &Path) -> Result<(bool, Option<PathBuf>)> {
+    let exists = worktree
+        .try_exists()
+        .with_context(|| format!("inspect worktree at {}", worktree.display()))?;
+    let registered = registered_worktrees(repository)?;
+    let registered_worktree = registered
+        .into_iter()
+        .find(|registered| equivalent_worktree_path(registered, worktree));
+    let Some(registered_worktree) = registered_worktree else {
+        if exists {
+            bail!(
+                "Path {} is not a registered Git worktree",
+                worktree.display()
+            );
+        }
+        return Ok((false, None));
+    };
+    if exists {
+        ensure_worktree_safe_to_remove(worktree)?;
+    }
+    Ok((exists, Some(registered_worktree)))
 }
 
 fn equivalent_worktree_path(left: &Path, right: &Path) -> bool {
@@ -160,6 +172,25 @@ pub(crate) fn ensure_worktree_safe_to_remove(worktree: &Path) -> Result<()> {
         .try_exists()
         .with_context(|| format!("inspect worktree at {}", worktree.display()))?
     {
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(worktree)
+            .args(["status", "--porcelain"])
+            .output()
+            .with_context(|| format!("inspect Git status at {}", worktree.display()))?;
+        if !status.status.success() {
+            bail!(
+                "Could not inspect Git status at {}: {}",
+                worktree.display(),
+                String::from_utf8_lossy(&status.stderr).trim()
+            );
+        }
+        if !status.stdout.is_empty() {
+            bail!(
+                "Worktree {} has uncommitted changes; commit or discard them before deleting the session",
+                worktree.display()
+            );
+        }
         ensure_head_is_referenced(worktree)?;
     }
     Ok(())

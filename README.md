@@ -81,7 +81,8 @@ the project directory is never deleted. Removing a worktree session deletes its
 worktree and registry entry; dirty worktrees and detached commits that are not
 reachable from a Git ref are refused rather than discarded. Removing a local
 session only removes its registry entry and never deletes project files. Close the
-session's Herdr workspace (worktree) or exact agent tab (local) before removing it.
+session through Switchyard and it automatically closes the exact Herdr workspace
+(worktree) or owned agent tab (local) before removing it.
 
 Worktree placement inherits Herdr's `worktrees.directory` setting. Switchyard does
 not keep a second worktree-root setting that could disagree with Herdr.

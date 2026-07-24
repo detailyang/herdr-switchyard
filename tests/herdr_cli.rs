@@ -593,3 +593,35 @@ fn closes_a_dedicated_agent_tab() {
     let calls = fs::read_to_string(log).unwrap();
     assert!(calls.contains("tab close w1:t4"));
 }
+
+#[test]
+fn closes_a_workspace() {
+    let (_root, herdr, log) = fake_herdr();
+
+    herdr.close_workspace("w1").unwrap();
+
+    let calls = fs::read_to_string(log).unwrap();
+    assert!(calls.contains("workspace close w1"));
+}
+
+#[test]
+fn closes_the_tab_containing_an_exact_agent_pane() {
+    let (_root, herdr, log) = fake_herdr();
+
+    herdr.close_agent_tab("w1:p2").unwrap();
+
+    let calls = fs::read_to_string(log).unwrap();
+    assert!(calls.contains("pane get w1:p2"));
+    assert!(calls.contains("tab close w1:t1"));
+}
+
+#[test]
+fn resolves_the_workspace_containing_a_tab() {
+    let (_root, herdr, log) = fake_herdr();
+
+    let workspace_id = herdr.workspace_for_tab("w1:t3").unwrap();
+
+    assert_eq!(workspace_id.as_deref(), Some("w1"));
+    let calls = fs::read_to_string(log).unwrap();
+    assert!(calls.contains("tab list"));
+}
