@@ -168,6 +168,7 @@ pub fn create_session<H: Herdr>(
     let created = herdr
         .create_worktree(project, session_name)
         .with_context(|| format!("create worktree for session {session_name:?}"))?;
+    let detach_is_pending = created.pending_temporary_branch.is_some();
     state.sessions.push(Session {
         project_id: project.id.clone(),
         name: session_name.to_owned(),
@@ -179,7 +180,7 @@ pub fn create_session<H: Herdr>(
         agent_session: None,
     });
 
-    if let Some(warning) = created.warning {
+    if detach_is_pending && let Some(warning) = created.warning.as_deref() {
         bail!("session was created and registered, but {warning}");
     }
     start_new_agent(
@@ -188,6 +189,9 @@ pub fn create_session<H: Herdr>(
         state.sessions.last().expect("session was just registered"),
         &created.workspace.pane_id,
     )?;
+    if let Some(warning) = created.warning {
+        bail!("session was created, registered, and started, but {warning}");
+    }
     Ok(Activation::Created)
 }
 

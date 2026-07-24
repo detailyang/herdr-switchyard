@@ -21,6 +21,7 @@ struct FakeHerdr {
     calls: RefCell<Vec<String>>,
     fail_start: bool,
     create_warning: Option<String>,
+    create_pending_detach: bool,
 }
 
 impl Herdr for FakeHerdr {
@@ -39,9 +40,8 @@ impl Herdr for FakeHerdr {
                 worktree_path: PathBuf::from("/worktrees/demo/feat-one"),
             },
             pending_temporary_branch: self
-                .create_warning
-                .as_ref()
-                .map(|_| "switchyard-session-pending".into()),
+                .create_pending_detach
+                .then(|| "switchyard-session-pending".into()),
             warning: self.create_warning.clone(),
         })
     }
@@ -375,6 +375,7 @@ fn refuses_to_delete_an_open_session() {
 fn registers_a_created_worktree_before_reporting_a_detach_warning() {
     let herdr = FakeHerdr {
         create_warning: Some("temporary branch remains".into()),
+        create_pending_detach: true,
         ..Default::default()
     };
     let mut state = State::default();
@@ -399,6 +400,36 @@ fn registers_a_created_worktree_before_reporting_a_detach_warning() {
     assert!(error.to_string().contains("temporary branch remains"));
     assert!(
         !herdr
+            .calls
+            .borrow()
+            .iter()
+            .any(|call| call.starts_with("start:"))
+    );
+}
+
+#[test]
+fn starts_and_registers_the_agent_before_reporting_a_tab_label_warning() {
+    let herdr = FakeHerdr {
+        create_warning: Some("could not rename its root tab".into()),
+        ..Default::default()
+    };
+    let mut state = State::default();
+
+    let error = create_session(
+        &herdr,
+        &project(),
+        &mut state,
+        "Short title",
+        SessionMode::Worktree,
+        42,
+    )
+    .unwrap_err();
+
+    assert_eq!(state.sessions.len(), 1);
+    assert_eq!(state.sessions[0].name, "Short title");
+    assert!(error.to_string().contains("could not rename its root tab"));
+    assert!(
+        herdr
             .calls
             .borrow()
             .iter()

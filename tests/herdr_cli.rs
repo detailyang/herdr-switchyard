@@ -44,6 +44,14 @@ case "$1 $2" in
     esac
     printf '%s\n' '{{"result":{{"type":"workspace_created","workspace":{{"workspace_id":"w4"}},"root_pane":{{"pane_id":"w4:p1"}}}}}}'
     ;;
+  "pane get")
+    case "$3" in
+      w2:p1) tab_id='w2:t1' ;;
+      w4:p1) tab_id='w4:t1' ;;
+      *) tab_id='w1:t1' ;;
+    esac
+    printf '%s\n' "{{\"result\":{{\"type\":\"pane_info\",\"pane\":{{\"pane_id\":\"$3\",\"tab_id\":\"$tab_id\"}}}}}}"
+    ;;
   "tab create")
     printf '%s\n' '{{"result":{{"type":"tab_created","tab":{{"tab_id":"w1:t4"}},"root_pane":{{"pane_id":"w1:p4"}}}}}}'
     ;;
@@ -231,7 +239,7 @@ printf '%s\n' '{{"result":{{"type":"worktree_created","workspace":{{"workspace_i
 
 #[test]
 fn returns_the_created_workspace_with_a_warning_when_detaching_fails() {
-    let (root, herdr, _log) = fake_herdr();
+    let (root, herdr, log) = fake_herdr();
     let repository = root.path().join("demo");
     initialize_repository(&repository);
     let mut configured_project = project();
@@ -249,6 +257,9 @@ fn returns_the_created_workspace_with_a_warning_when_detaching_fails() {
             .unwrap()
             .contains("could not finish detaching")
     );
+    let calls = fs::read_to_string(log).unwrap();
+    assert!(calls.contains("pane get w2:p1"));
+    assert!(calls.contains("tab rename w2:t1 Improve login flow"));
     assert!(
         created
             .pending_temporary_branch
@@ -269,6 +280,14 @@ fn recovers_a_created_worktree_when_herdr_returns_invalid_create_json() {
     let script = format!(
         r#"#!/bin/sh
 printf '%s\n' "$*" >> '{}'
+if [ "$1 $2" = 'pane get' ]; then
+  printf '%s\n' '{{"result":{{"type":"pane_info","pane":{{"pane_id":"w2:p1","tab_id":"w2:t1"}}}}}}'
+  exit 0
+fi
+if [ "$1 $2" = 'tab rename' ]; then
+  printf '%s\n' '{{"result":{{"type":"tab_renamed"}}}}'
+  exit 0
+fi
 if [ "$1 $2" = 'worktree open' ]; then
   printf '%s\n' '{{"result":{{"type":"worktree_opened","workspace":{{"workspace_id":"w2"}},"root_pane":{{"pane_id":"w2:p1"}},"worktree":{{"path":"{}"}}}}}}'
   exit 0
@@ -311,6 +330,70 @@ printf '%s\n' '{{invalid-json'
     let calls = fs::read_to_string(log).unwrap();
     assert!(calls.contains("worktree open --cwd"));
     assert!(calls.contains("--label Recover response --focus --json"));
+    assert!(calls.contains("pane get w2:p1"));
+    assert!(calls.contains("tab rename w2:t1 Recover response"));
+}
+
+#[test]
+fn a_tab_lookup_failure_does_not_reopen_an_already_created_worktree() {
+    let root = tempdir().unwrap();
+    let repository = root.path().join("demo");
+    let checkout = root.path().join("checkout");
+    initialize_repository(&repository);
+    let executable = root.path().join("herdr");
+    let log = root.path().join("calls.log");
+    let script = format!(
+        r#"#!/bin/sh
+printf '%s\n' "$*" >> '{}'
+if [ "$1 $2" = 'pane get' ]; then
+  printf '%s\n' '{{"error":{{"message":"pane unavailable"}}}}' >&2
+  exit 1
+fi
+if [ "$1 $2" = 'worktree open' ]; then
+  printf '%s\n' '{{"result":{{"type":"worktree_opened","workspace":{{"workspace_id":"w2"}},"root_pane":{{"pane_id":"w2:p1"}},"worktree":{{"path":"{}"}}}}}}'
+  exit 0
+fi
+cwd=''
+branch=''
+base=''
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --cwd) cwd="$2"; shift 2 ;;
+    --branch) branch="$2"; shift 2 ;;
+    --base) base="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+git -C "$cwd" worktree add -b "$branch" '{}' "$base" >/dev/null 2>&1 || exit 1
+printf '%s\n' '{{"result":{{"type":"worktree_created","workspace":{{"workspace_id":"w2"}},"root_pane":{{"pane_id":"w2:p1"}},"worktree":{{"path":"{}"}}}}}}'
+"#,
+        log.display(),
+        checkout.display(),
+        checkout.display(),
+        checkout.display(),
+    );
+    fs::write(&executable, script).unwrap();
+    let mut permissions = fs::metadata(&executable).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&executable, permissions).unwrap();
+    let herdr = CliHerdr::new(&executable);
+    let mut configured_project = project();
+    configured_project.path = repository;
+
+    let created = herdr
+        .create_worktree(&configured_project, "Short title")
+        .unwrap();
+
+    assert_eq!(created.pending_temporary_branch, None);
+    assert!(
+        created
+            .warning
+            .as_deref()
+            .unwrap()
+            .contains("pane unavailable")
+    );
+    let calls = fs::read_to_string(log).unwrap();
+    assert!(!calls.contains("worktree open"));
 }
 
 #[test]
@@ -414,6 +497,8 @@ fn opens_a_local_session_in_the_configured_project_directory() {
     let calls = fs::read_to_string(log).unwrap();
     assert!(calls.contains("workspace create --cwd /repos/demo --label Demo --focus"));
     assert!(!calls.contains("workspace create --cwd /repos/demo --label Demo --focus --json"));
+    assert!(calls.contains("pane get w4:p1"));
+    assert!(calls.contains("tab rename w4:t1 local one"));
 }
 
 #[test]

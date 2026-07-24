@@ -137,11 +137,11 @@ impl Herdr for CliHerdr {
             OsString::from("--focus"),
             OsString::from("--json"),
         ];
-        let workspace = match self
-            .run_json(args)
-            .and_then(|response| self.opened_workspace_with_tab_label(&response, session_name))
-        {
-            Ok(workspace) => workspace,
+        let (workspace, response) = match self.run_json(args).and_then(|response| {
+            let workspace = opened_workspace(&response)?;
+            Ok((workspace, response))
+        }) {
+            Ok(created) => created,
             Err(create_error) => {
                 let Some(worktree_path) =
                     worktree_path_for_branch(&project.path, &plan.temporary_branch)?
@@ -162,7 +162,8 @@ impl Herdr for CliHerdr {
                         OsString::from("--json"),
                     ])
                     .and_then(|response| {
-                        self.opened_workspace_with_tab_label(&response, session_name)
+                        let workspace = opened_workspace(&response)?;
+                        Ok((workspace, response))
                     })
                     .with_context(|| {
                         format!(
@@ -170,7 +171,7 @@ impl Herdr for CliHerdr {
                         )
                     });
                 match recovery {
-                    Ok(workspace) => workspace,
+                    Ok(recovered) => recovered,
                     Err(recovery_error) => {
                         return Ok(CreatedWorktree {
                             workspace: OpenedWorkspace {
@@ -187,7 +188,11 @@ impl Herdr for CliHerdr {
                 }
             }
         };
-        let warning = detach_created_worktree(
+        let rename_warning = self
+            .rename_root_tab(&response, session_name)
+            .err()
+            .map(|error| format!("could not rename its root tab: {error:#}"));
+        let detach_warning = detach_created_worktree(
             &project.path,
             &workspace.worktree_path,
             &plan.temporary_branch,
@@ -199,7 +204,12 @@ impl Herdr for CliHerdr {
                 plan.temporary_branch
             )
         });
-        let pending_temporary_branch = warning.as_ref().map(|_| plan.temporary_branch);
+        let pending_temporary_branch = detach_warning.as_ref().map(|_| plan.temporary_branch);
+        let warning = match (rename_warning, detach_warning) {
+            (Some(rename), Some(detach)) => Some(format!("{rename}; {detach}")),
+            (Some(warning), None) | (None, Some(warning)) => Some(warning),
+            (None, None) => None,
+        };
         Ok(CreatedWorktree {
             workspace,
             pending_temporary_branch,
@@ -233,7 +243,7 @@ impl Herdr for CliHerdr {
         self.opened_workspace_with_tab_label(&response, &session.name)
     }
 
-    fn open_local(&self, project: &Project, _session: &Session) -> Result<OpenedWorkspace> {
+    fn open_local(&self, project: &Project, session: &Session) -> Result<OpenedWorkspace> {
         let response = self.run_json([
             OsString::from("workspace"),
             OsString::from("create"),
@@ -243,6 +253,7 @@ impl Herdr for CliHerdr {
             OsString::from(&project.name),
             OsString::from("--focus"),
         ])?;
+        self.rename_root_tab(&response, &session.name)?;
         Ok(OpenedWorkspace {
             workspace_id: string_at(&response, "/result/workspace/workspace_id")?.to_owned(),
             pane_id: string_at(&response, "/result/root_pane/pane_id")?.to_owned(),
@@ -314,18 +325,30 @@ impl CliHerdr {
         label: &str,
     ) -> Result<OpenedWorkspace> {
         let workspace = opened_workspace(response)?;
-        if let Some(tab_id) = response
-            .pointer("/result/tab/tab_id")
-            .and_then(Value::as_str)
-        {
-            self.run_json([
-                OsString::from("tab"),
-                OsString::from("rename"),
-                OsString::from(tab_id),
-                OsString::from(label),
-            ])?;
-        }
+        self.rename_root_tab(response, label)?;
         Ok(workspace)
+    }
+
+    fn rename_root_tab(&self, response: &Value, label: &str) -> Result<()> {
+        let direct_tab_id = response
+            .pointer("/result/tab/tab_id")
+            .or_else(|| response.pointer("/result/root_pane/tab_id"))
+            .and_then(Value::as_str);
+        let pane_response;
+        let tab_id = if let Some(tab_id) = direct_tab_id {
+            tab_id
+        } else {
+            let pane_id = string_at(response, "/result/root_pane/pane_id")?;
+            pane_response = self.run_json(["pane", "get", pane_id])?;
+            string_at(&pane_response, "/result/pane/tab_id")?
+        };
+        self.run_json([
+            OsString::from("tab"),
+            OsString::from("rename"),
+            OsString::from(tab_id),
+            OsString::from(label),
+        ])?;
+        Ok(())
     }
 }
 
