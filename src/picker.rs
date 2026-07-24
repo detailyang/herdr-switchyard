@@ -39,7 +39,7 @@ use crate::{
     theme::Theme,
 };
 
-const ROW_HEIGHT: u16 = 2;
+const ROW_HEIGHT: u16 = 1;
 const DIRECTORY_ROW_HEIGHT: u16 = 1;
 const DOUBLE_CLICK_WINDOW: Duration = Duration::from_millis(500);
 const DEFAULT_AGENT: &str = "pi";
@@ -4062,6 +4062,44 @@ mod tests {
     }
 
     #[test]
+    fn project_and_session_rows_use_consistent_single_line_height() {
+        let mut picker = picker_with_many_sessions();
+        picker.config.projects.push(Project {
+            id: "other".into(),
+            name: "Other".into(),
+            path: PathBuf::from("/repos/other"),
+            agent: "pi".into(),
+            base_branch: "main".into(),
+            agent_args: Vec::new(),
+        });
+        let area = Rect::new(0, 0, 120, 36);
+        let layout = UiLayout::new(area);
+        let backend = TestBackend::new(area.width, area.height);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal.draw(|frame| picker.draw(frame)).unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let sessions = picker.filtered_session_indices("demo");
+        let first_name = &picker.state.sessions[sessions[0]].name;
+        let second_name = &picker.state.sessions[sessions[1]].name;
+        let row_text = |row| {
+            (layout.session_rows.x..layout.session_rows.right())
+                .map(|column| buffer.cell((column, row)).unwrap().symbol())
+                .collect::<String>()
+        };
+        assert!(row_text(layout.session_rows.y).contains(first_name));
+        assert!(row_text(layout.session_rows.y + 1).contains(second_name));
+        let project_row_text = |row| {
+            (layout.project_rows.x..layout.project_rows.right())
+                .map(|column| buffer.cell((column, row)).unwrap().symbol())
+                .collect::<String>()
+        };
+        assert!(project_row_text(layout.project_rows.y).contains("Demo"));
+        assert!(project_row_text(layout.project_rows.y + 1).contains("Other"));
+    }
+
+    #[test]
     fn focused_new_session_action_does_not_use_the_row_highlight_background() {
         let mut picker = picker();
         picker.handle_key(key(KeyCode::Enter));
@@ -4288,38 +4326,6 @@ mod tests {
                 project_id: "demo".into(),
                 session_name: expected_session,
             }
-        );
-    }
-
-    #[test]
-    fn mouse_ignores_the_partial_row_at_the_bottom_of_a_table() {
-        let mut picker = picker_with_many_sessions();
-        picker.handle_key(key(KeyCode::Enter));
-        let (area, layout) = (10..50)
-            .find_map(|height| {
-                let area = Rect::new(0, 0, 120, height);
-                let layout = UiLayout::new(area);
-                (layout.session_rows.height >= 3 && layout.session_rows.height % ROW_HEIGHT == 1)
-                    .then_some((area, layout))
-            })
-            .unwrap();
-        let partial_row = Rect::new(
-            layout.session_rows.x,
-            layout.session_rows.bottom() - 1,
-            layout.session_rows.width,
-            1,
-        );
-        let click = left_click(partial_row);
-        let first_click = std::time::Instant::now();
-
-        assert_eq!(
-            picker.handle_mouse_at(click, area, first_click),
-            Intent::None
-        );
-        assert_eq!(picker.session_selected, 0);
-        assert_eq!(
-            picker.handle_mouse_at(click, area, first_click + Duration::from_millis(100)),
-            Intent::None
         );
     }
 
