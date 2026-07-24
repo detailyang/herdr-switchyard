@@ -1156,9 +1156,14 @@ impl Picker {
                 self.open_add_project();
                 Intent::None
             }
-            KeyCode::Enter => {
+            KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => {
                 let projects = self.filtered_project_indices();
-                if projects.get(self.project_selected - 1).is_some() {
+                if self
+                    .project_selected
+                    .checked_sub(1)
+                    .and_then(|position| projects.get(position))
+                    .is_some()
+                {
                     self.focused_pane = FocusedPane::Sessions;
                     self.session_selected = 0;
                 }
@@ -1175,7 +1180,7 @@ impl Picker {
         };
         match key {
             KeyCode::Char('q') => Intent::Quit,
-            KeyCode::Esc => {
+            KeyCode::Esc | KeyCode::Left | KeyCode::Char('h') => {
                 self.focused_pane = FocusedPane::Projects;
                 Intent::None
             }
@@ -2779,6 +2784,36 @@ mod tests {
         assert_eq!(picker.view, View::Browser);
         assert_eq!(picker.focused_pane, FocusedPane::Sessions);
         assert_eq!(picker.session_selected, 0);
+    }
+
+    #[test]
+    fn vim_and_arrow_keys_switch_between_project_and_session_panes() {
+        for key_code in [KeyCode::Char('l'), KeyCode::Right] {
+            let mut picker = picker();
+
+            assert_eq!(picker.handle_key(key(key_code)), Intent::None);
+            assert_eq!(picker.focused_pane, FocusedPane::Sessions);
+            assert_eq!(picker.session_selected, 0);
+        }
+
+        for key_code in [KeyCode::Char('h'), KeyCode::Left] {
+            let mut picker = picker();
+            picker.handle_key(key(KeyCode::Enter));
+
+            assert_eq!(picker.handle_key(key(key_code)), Intent::None);
+            assert_eq!(picker.focused_pane, FocusedPane::Projects);
+        }
+    }
+
+    #[test]
+    fn pane_switch_keys_remain_filter_text_while_searching() {
+        let mut picker = picker();
+        picker.handle_key(key(KeyCode::Char('/')));
+
+        picker.handle_key(key(KeyCode::Char('l')));
+
+        assert_eq!(picker.focused_pane, FocusedPane::Projects);
+        assert_eq!(picker.project_filter, "l");
     }
 
     #[test]
